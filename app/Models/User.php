@@ -5,6 +5,7 @@ namespace App\Models;
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -23,6 +24,8 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'role',
+        'is_active',
     ];
 
     /**
@@ -45,7 +48,63 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'is_active' => 'boolean',
         ];
+    }
+
+    /**
+     * Determine if the user is an operator.
+     */
+    public function isOperator(): bool
+    {
+        return $this->role === 'operator';
+    }
+
+    /**
+     * Determine if the user is a client.
+     */
+    public function isClient(): bool
+    {
+        return $this->role === 'client';
+    }
+
+    /**
+     * Get the contacts linked to this user.
+     */
+    public function contacts(): HasMany
+    {
+        return $this->hasMany(Contact::class);
+    }
+
+    /**
+     * Get entities linked to this user through contacts.
+     */
+    public function entities(): BelongsToMany
+    {
+        return $this->belongsToMany(Entity::class, 'contacts', 'user_id', 'entity_id')
+            ->withTimestamps()
+            ->withPivot(['id', 'name', 'email', 'is_primary', 'is_active'])
+            ->distinct();
+    }
+
+    /**
+     * Get inboxes accessible to this operator.
+     */
+    public function accessibleInboxes(): BelongsToMany
+    {
+        return $this->belongsToMany(Inbox::class, 'inbox_user')->withTimestamps();
+    }
+
+    /**
+     * Check if the user can access an inbox.
+     */
+    public function hasInboxAccess(int $inboxId): bool
+    {
+        if (! $this->isOperator()) {
+            return false;
+        }
+
+        return $this->accessibleInboxes()->whereKey($inboxId)->exists();
     }
 
     /**
