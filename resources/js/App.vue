@@ -26,6 +26,7 @@ const logout = async () => {
                 <strong class="brand">Supportdesk</strong>
 
                 <nav class="menu" v-if="user">
+                    <RouterLink :to="{ name: 'dashboard' }">Dashboard</RouterLink>
                     <RouterLink :to="{ name: 'tickets.index' }">Tickets</RouterLink>
                     <RouterLink :to="{ name: 'tickets.create' }">Novo Ticket</RouterLink>
                     <button type="button" @click="logout">Terminar sessao</button>

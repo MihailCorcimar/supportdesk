@@ -23,5 +23,7 @@ return [
         'assigned_operator_id' => 'operador',
         'cc_emails' => 'conhecimento',
         'body' => 'mensagem',
+        'attachments' => 'anexos',
+        'attachments.*' => 'anexo',
     ],
 ];

@@ -79,7 +79,7 @@ class AuthApiController extends Controller
         $request->session()->regenerateToken();
 
         return response()->json([
-            'message' => 'Sessao terminada.',
+            'message' => 'Session ended.',
         ]);
     }
 }

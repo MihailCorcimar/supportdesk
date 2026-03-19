@@ -107,4 +107,12 @@ class Ticket extends Model
     {
         return $this->hasMany(TicketLog::class);
     }
+
+    /**
+     * Get all attachments for this ticket.
+     */
+    public function attachments(): HasMany
+    {
+        return $this->hasMany(TicketAttachment::class);
+    }
 }

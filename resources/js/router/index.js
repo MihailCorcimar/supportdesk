@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import LoginPage from '../pages/LoginPage.vue';
+import DashboardPage from '../pages/DashboardPage.vue';
 import TicketsListPage from '../pages/TicketsListPage.vue';
 import TicketCreatePage from '../pages/TicketCreatePage.vue';
 import TicketShowPage from '../pages/TicketShowPage.vue';
@@ -20,6 +21,12 @@ const routes = [
         path: '/tickets',
         name: 'tickets.index',
         component: TicketsListPage,
+        meta: { requiresAuth: true },
+    },
+    {
+        path: '/dashboard',
+        name: 'dashboard',
+        component: DashboardPage,
         meta: { requiresAuth: true },
     },
     {

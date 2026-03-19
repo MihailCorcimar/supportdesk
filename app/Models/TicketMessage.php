@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class TicketMessage extends Model
 {
@@ -60,5 +61,13 @@ class TicketMessage extends Model
     public function authorContact(): BelongsTo
     {
         return $this->belongsTo(Contact::class, 'author_contact_id');
+    }
+
+    /**
+     * Get all attachments for this message.
+     */
+    public function attachmentsList(): HasMany
+    {
+        return $this->hasMany(TicketAttachment::class, 'ticket_message_id');
     }
 }

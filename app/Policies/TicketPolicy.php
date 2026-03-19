@@ -50,6 +50,14 @@ class TicketPolicy
     }
 
     /**
+     * Determine whether the user can update ticket metadata fields.
+     */
+    public function updateMetadata(User $user, Ticket $ticket): bool
+    {
+        return $this->update($user, $ticket);
+    }
+
+    /**
      * Determine whether the user can add messages to the ticket.
      */
     public function reply(User $user, Ticket $ticket): bool
@@ -64,4 +72,13 @@ class TicketPolicy
     {
         return $this->update($user, $ticket);
     }
+
+    /**
+     * Determine whether the user can update status transitions.
+     */
+    public function updateStatus(User $user, Ticket $ticket): bool
+    {
+        return $this->update($user, $ticket);
+    }
 }
+

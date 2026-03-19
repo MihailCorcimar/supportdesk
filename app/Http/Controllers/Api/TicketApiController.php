@@ -7,8 +7,10 @@ use App\Models\Contact;
 use App\Models\Entity;
 use App\Models\Inbox;
 use App\Models\Ticket;
+use App\Models\TicketAttachment;
 use App\Models\TicketMessage;
 use App\Models\User;
+use App\Services\TicketNotificationService;
 use App\Support\TicketActivityLogger;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -20,6 +22,11 @@ use Illuminate\Validation\ValidationException;
 
 class TicketApiController extends Controller
 {
+    public function __construct(
+        private readonly TicketNotificationService $notificationService
+    ) {
+    }
+
     /**
      * List tickets visible to current user with filters.
      */
@@ -38,7 +45,9 @@ class TicketApiController extends Controller
         $tickets = $ticketsQuery->paginate(15)->withQueryString();
 
         return response()->json([
-            'data' => collect($tickets->items())->map(fn (Ticket $ticket) => $this->serializeTicketListItem($ticket))->all(),
+            'data' => collect($tickets->items())
+                ->map(fn (Ticket $ticket) => $this->serializeTicketListItem($ticket))
+                ->all(),
             'meta' => [
                 'current_page' => $tickets->currentPage(),
                 'last_page' => $tickets->lastPage(),
@@ -159,6 +168,7 @@ class TicketApiController extends Controller
                 'type' => $validated['type'],
                 'cc_emails' => $ccEmails,
                 'last_activity_at' => now(),
+                'first_response_at' => $user->isOperator() ? now() : null,
                 'resolved_at' => $initialStatus === 'resolved' ? now() : null,
             ]);
 
@@ -166,23 +176,14 @@ class TicketApiController extends Controller
                 'ticket_number' => sprintf('TC-%06d', $ticket->id),
             ]);
 
-            if ($user->isClient()) {
-                TicketMessage::query()->create([
-                    'ticket_id' => $ticket->id,
-                    'author_type' => 'contact',
-                    'author_contact_id' => $contact?->id,
-                    'body' => $validated['description'],
-                    'is_internal' => false,
-                ]);
-            } else {
-                TicketMessage::query()->create([
-                    'ticket_id' => $ticket->id,
-                    'author_type' => 'user',
-                    'author_user_id' => $user->id,
-                    'body' => $validated['description'],
-                    'is_internal' => false,
-                ]);
-            }
+            $message = TicketMessage::query()->create([
+                'ticket_id' => $ticket->id,
+                'author_type' => $user->isClient() ? 'contact' : 'user',
+                'author_user_id' => $user->isOperator() ? $user->id : null,
+                'author_contact_id' => $user->isClient() ? $contact?->id : null,
+                'body' => $validated['description'],
+                'is_internal' => false,
+            ]);
 
             $actor = TicketActivityLogger::actorFor($user, $contact);
 
@@ -206,7 +207,7 @@ class TicketApiController extends Controller
                 $actor['actor_type'],
                 $actor['actor_user_id'],
                 $actor['actor_contact_id'],
-                ['internal' => false, 'initial_message' => true]
+                ['internal' => false, 'initial_message' => true, 'message_id' => $message->id]
             );
 
             if ($assignedOperator) {
@@ -225,8 +226,10 @@ class TicketApiController extends Controller
             return $ticket;
         });
 
+        $this->notificationService->notifyTicketCreated($ticket);
+
         return response()->json([
-            'message' => 'Ticket criado com sucesso.',
+            'message' => 'Ticket created successfully.',
             'data' => [
                 'id' => $ticket->id,
                 'ticket_number' => $ticket->ticket_number,
@@ -249,6 +252,7 @@ class TicketApiController extends Controller
             'assignedOperator',
             'messages.authorUser',
             'messages.authorContact',
+            'messages.attachmentsList',
             'logs.actorUser',
             'logs.actorContact',
         ]);
@@ -264,8 +268,10 @@ class TicketApiController extends Controller
                 ->get();
         }
 
+        $availableInboxes = $this->inboxesForUser($request->user());
+
         return response()->json([
-            'data' => $this->serializeTicketDetail($ticket, $operators),
+            'data' => $this->serializeTicketDetail($ticket, $operators, $availableInboxes, $request),
         ]);
     }
 
@@ -274,7 +280,7 @@ class TicketApiController extends Controller
      */
     public function updateStatus(Request $request, Ticket $ticket): JsonResponse
     {
-        $this->authorize('update', $ticket);
+        $this->authorize('updateStatus', $ticket);
 
         $validated = $request->validate([
             'status' => ['required', Rule::in(['open', 'pending', 'resolved', 'closed'])],
@@ -285,9 +291,17 @@ class TicketApiController extends Controller
 
         if ($oldStatus === $newStatus) {
             return response()->json([
-                'message' => 'Estado sem alteracoes.',
+                'message' => 'Status unchanged.',
                 'data' => ['status' => $ticket->status],
             ]);
+        }
+
+        if (
+            in_array($newStatus, ['resolved', 'closed'], true)
+            && $ticket->assigned_operator_id
+            && $ticket->assigned_operator_id !== $request->user()->id
+        ) {
+            abort(403, 'Only the assigned operator can resolve or close this ticket.');
         }
 
         $ticket->update([
@@ -307,8 +321,10 @@ class TicketApiController extends Controller
             $request->user()->id
         );
 
+        $this->notificationService->notifyStatusUpdated($ticket);
+
         return response()->json([
-            'message' => 'Estado atualizado.',
+            'message' => 'Status updated.',
             'data' => ['status' => $ticket->status],
         ]);
     }
@@ -327,6 +343,13 @@ class TicketApiController extends Controller
         $oldOperatorId = $ticket->assigned_operator_id;
         $newOperator = $this->resolveAssignedOperator($validated['assigned_operator_id'] ?? null, $ticket->inbox_id);
 
+        if ($oldOperatorId === $newOperator?->id) {
+            return response()->json([
+                'message' => 'Assignment unchanged.',
+                'data' => ['assigned_operator_id' => $ticket->assigned_operator_id],
+            ]);
+        }
+
         $ticket->update([
             'assigned_operator_id' => $newOperator?->id,
             'last_activity_at' => now(),
@@ -342,9 +365,124 @@ class TicketApiController extends Controller
             $request->user()->id
         );
 
+        $this->notificationService->notifyAssignmentUpdated($ticket);
+
         return response()->json([
-            'message' => 'Atribuicao atualizada.',
+            'message' => 'Assignment updated.',
             'data' => ['assigned_operator_id' => $ticket->assigned_operator_id],
+        ]);
+    }
+
+    /**
+     * Update ticket metadata fields.
+     */
+    public function updateMetadata(Request $request, Ticket $ticket): JsonResponse
+    {
+        $this->authorize('updateMetadata', $ticket);
+
+        $validated = $request->validate([
+            'subject' => ['sometimes', 'required', 'string', 'max:255'],
+            'priority' => ['sometimes', Rule::in(['low', 'medium', 'high', 'urgent'])],
+            'type' => ['sometimes', Rule::in(['question', 'incident', 'request', 'task', 'other'])],
+            'inbox_id' => ['sometimes', 'integer', Rule::exists('inboxes', 'id')],
+            'cc_emails' => ['sometimes', 'nullable', 'string'],
+        ]);
+
+        if ($validated === []) {
+            return response()->json([
+                'message' => 'No changes to apply.',
+            ]);
+        }
+
+        $user = $request->user();
+        $updates = [];
+        $changes = [];
+
+        if (array_key_exists('subject', $validated) && $validated['subject'] !== $ticket->subject) {
+            $updates['subject'] = $validated['subject'];
+            $changes[] = ['field' => 'subject', 'old' => $ticket->subject, 'new' => $validated['subject']];
+        }
+
+        if (array_key_exists('priority', $validated) && $validated['priority'] !== $ticket->priority) {
+            $updates['priority'] = $validated['priority'];
+            $changes[] = ['field' => 'priority', 'old' => $ticket->priority, 'new' => $validated['priority']];
+        }
+
+        if (array_key_exists('type', $validated) && $validated['type'] !== $ticket->type) {
+            $updates['type'] = $validated['type'];
+            $changes[] = ['field' => 'type', 'old' => $ticket->type, 'new' => $validated['type']];
+        }
+
+        if (array_key_exists('inbox_id', $validated) && (int) $validated['inbox_id'] !== $ticket->inbox_id) {
+            if (! $user->hasInboxAccess((int) $validated['inbox_id'])) {
+                abort(403, 'You cannot move this ticket to an inbox you cannot access.');
+            }
+
+            $updates['inbox_id'] = (int) $validated['inbox_id'];
+            $changes[] = ['field' => 'inbox_id', 'old' => $ticket->inbox_id, 'new' => (int) $validated['inbox_id']];
+
+            if ($ticket->assignedOperator && ! $ticket->assignedOperator->hasInboxAccess((int) $validated['inbox_id'])) {
+                $changes[] = [
+                    'field' => 'assigned_operator_id',
+                    'old' => $ticket->assigned_operator_id,
+                    'new' => null,
+                ];
+
+                $updates['assigned_operator_id'] = null;
+            }
+        }
+
+        if (array_key_exists('cc_emails', $validated)) {
+            $newCc = $this->parseCcEmails($validated['cc_emails']);
+            $currentCc = collect($ticket->cc_emails ?? [])->map(fn (string $email) => mb_strtolower(trim($email)))->sort()->values()->all();
+            $normalizedNewCc = collect($newCc)->map(fn (string $email) => mb_strtolower(trim($email)))->sort()->values()->all();
+
+            if ($currentCc !== $normalizedNewCc) {
+                $updates['cc_emails'] = $newCc;
+                $changes[] = [
+                    'field' => 'cc_emails',
+                    'old' => implode(', ', $ticket->cc_emails ?? []),
+                    'new' => implode(', ', $newCc),
+                ];
+            }
+        }
+
+        if ($changes === []) {
+            return response()->json([
+                'message' => 'No changes to apply.',
+                'data' => [
+                    'ticket_id' => $ticket->id,
+                ],
+            ]);
+        }
+
+        $updates['last_activity_at'] = now();
+
+        DB::transaction(function () use ($ticket, $updates, $changes, $user): void {
+            $ticket->update($updates);
+
+            foreach ($changes as $change) {
+                $action = $change['field'] === 'assigned_operator_id'
+                    ? 'assignment_updated'
+                    : 'field_updated';
+
+                TicketActivityLogger::log(
+                    $ticket,
+                    $action,
+                    $change['field'],
+                    $change['old'],
+                    $change['new'],
+                    'user',
+                    $user->id
+                );
+            }
+        });
+
+        return response()->json([
+            'message' => 'Metadata updated.',
+            'data' => [
+                'ticket_id' => $ticket->id,
+            ],
         ]);
     }
 
@@ -404,7 +542,7 @@ class TicketApiController extends Controller
         }
 
         if ($request->filled('search')) {
-            $search = trim($request->string('search'));
+            $search = trim((string) $request->string('search'));
 
             $query->where(function (Builder $inner) use ($search): void {
                 $inner->where('ticket_number', 'like', "%{$search}%")
@@ -500,7 +638,7 @@ class TicketApiController extends Controller
         $emails = collect(explode(',', $rawEmails))
             ->map(fn (string $item) => trim($item))
             ->filter()
-            ->unique()
+            ->unique(fn (string $email) => mb_strtolower($email))
             ->values();
 
         foreach ($emails as $email) {
@@ -540,9 +678,10 @@ class TicketApiController extends Controller
      * Serialize ticket detail payload.
      *
      * @param  \Illuminate\Support\Collection<int, User>  $operators
+     * @param  \Illuminate\Support\Collection<int, Inbox>  $availableInboxes
      * @return array<string, mixed>
      */
-    private function serializeTicketDetail(Ticket $ticket, $operators): array
+    private function serializeTicketDetail(Ticket $ticket, $operators, $availableInboxes, Request $request): array
     {
         return [
             'id' => $ticket->id,
@@ -560,6 +699,12 @@ class TicketApiController extends Controller
             'contact' => $ticket->contact ? ['id' => $ticket->contact->id, 'name' => $ticket->contact->name, 'email' => $ticket->contact->email] : null,
             'creator_user' => $ticket->creatorUser ? ['id' => $ticket->creatorUser->id, 'name' => $ticket->creatorUser->name] : null,
             'assigned_operator' => $ticket->assignedOperator ? ['id' => $ticket->assignedOperator->id, 'name' => $ticket->assignedOperator->name] : null,
+            'permissions' => [
+                'can_reply' => $request->user()->can('reply', $ticket),
+                'can_update_status' => $request->user()->can('updateStatus', $ticket),
+                'can_assign' => $request->user()->can('assign', $ticket),
+                'can_update_metadata' => $request->user()->can('updateMetadata', $ticket),
+            ],
             'messages' => $ticket->messages->sortByDesc('created_at')->values()->map(fn (TicketMessage $message) => [
                 'id' => $message->id,
                 'author_type' => $message->author_type,
@@ -568,6 +713,14 @@ class TicketApiController extends Controller
                 'body' => $message->body,
                 'is_internal' => $message->is_internal,
                 'created_at' => optional($message->created_at)?->toIso8601String(),
+                'attachments' => $message->attachmentsList->map(fn (TicketAttachment $attachment) => [
+                    'id' => $attachment->id,
+                    'uuid' => $attachment->uuid,
+                    'original_name' => $attachment->original_name,
+                    'mime_type' => $attachment->mime_type,
+                    'size' => $attachment->size,
+                    'download_url' => route('app-api.attachments.download', $attachment),
+                ])->values()->all(),
             ])->all(),
             'logs' => $ticket->logs->sortByDesc('created_at')->values()->map(fn ($log) => [
                 'id' => $log->id,
@@ -584,6 +737,11 @@ class TicketApiController extends Controller
                 'id' => $operator->id,
                 'name' => $operator->name,
             ])->values()->all(),
+            'available_inboxes' => $availableInboxes->map(fn (Inbox $inbox) => [
+                'id' => $inbox->id,
+                'name' => $inbox->name,
+            ])->values()->all(),
         ];
     }
 }
+
