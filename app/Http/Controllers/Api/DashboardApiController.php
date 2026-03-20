@@ -30,8 +30,9 @@ class DashboardApiController extends Controller
             ->map(fn (Ticket $ticket) => $ticket->created_at->diffInMinutes($ticket->first_response_at));
 
         $resolutionDurations = $tickets
-            ->filter(fn (Ticket $ticket) => $ticket->resolved_at !== null)
-            ->map(fn (Ticket $ticket) => $ticket->created_at->diffInMinutes($ticket->resolved_at));
+            ->filter(fn (Ticket $ticket) => $ticket->status === 'closed')
+            ->filter(fn (Ticket $ticket) => $ticket->closed_at !== null || $ticket->resolved_at !== null)
+            ->map(fn (Ticket $ticket) => $ticket->created_at->diffInMinutes($ticket->closed_at ?? $ticket->resolved_at));
 
         $firstResponseSlaHours = (int) config('supportdesk.sla.first_response_hours', 4);
         $resolutionSlaHours = (int) config('supportdesk.sla.resolution_hours', 24);
@@ -42,8 +43,9 @@ class DashboardApiController extends Controller
             ->count();
 
         $resolutionWithinSla = $tickets
-            ->filter(fn (Ticket $ticket) => $ticket->resolved_at !== null)
-            ->filter(fn (Ticket $ticket) => $ticket->created_at->diffInMinutes($ticket->resolved_at) <= ($resolutionSlaHours * 60))
+            ->filter(fn (Ticket $ticket) => $ticket->status === 'closed')
+            ->filter(fn (Ticket $ticket) => $ticket->closed_at !== null || $ticket->resolved_at !== null)
+            ->filter(fn (Ticket $ticket) => $ticket->created_at->diffInMinutes($ticket->closed_at ?? $ticket->resolved_at) <= ($resolutionSlaHours * 60))
             ->count();
 
         $byInbox = $tickets
@@ -56,9 +58,10 @@ class DashboardApiController extends Controller
                     'inbox_name' => $first?->inbox?->name ?? 'No Inbox',
                     'total' => $group->count(),
                     'open' => $group->where('status', 'open')->count(),
+                    'in_progress' => $group->where('status', 'in_progress')->count(),
                     'pending' => $group->where('status', 'pending')->count(),
-                    'resolved' => $group->where('status', 'resolved')->count(),
                     'closed' => $group->where('status', 'closed')->count(),
+                    'cancelled' => $group->where('status', 'cancelled')->count(),
                 ];
             })
             ->sortByDesc('total')
@@ -70,9 +73,10 @@ class DashboardApiController extends Controller
                 'totals' => [
                     'all_tickets' => $tickets->count(),
                     'open' => (int) ($statusCounts['open'] ?? 0),
+                    'in_progress' => (int) ($statusCounts['in_progress'] ?? 0),
                     'pending' => (int) ($statusCounts['pending'] ?? 0),
-                    'resolved' => (int) ($statusCounts['resolved'] ?? 0),
                     'closed' => (int) ($statusCounts['closed'] ?? 0),
+                    'cancelled' => (int) ($statusCounts['cancelled'] ?? 0),
                 ],
                 'averages' => [
                     'first_response_minutes' => $firstResponseDurations->isEmpty() ? null : round((float) $firstResponseDurations->avg(), 2),

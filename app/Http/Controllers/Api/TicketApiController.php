@@ -103,8 +103,8 @@ class TicketApiController extends Controller
                     'id' => $operator->id,
                     'name' => $operator->name,
                 ])->values(),
-                'statuses' => ['open', 'pending', 'resolved', 'closed'],
-                'create_statuses' => ['open', 'pending', 'resolved'],
+                'statuses' => ['open', 'in_progress', 'pending', 'closed', 'cancelled'],
+                'create_statuses' => ['open', 'in_progress', 'pending'],
                 'priorities' => ['low', 'medium', 'high', 'urgent'],
                 'types' => ['question', 'incident', 'request', 'task', 'other'],
             ],
@@ -128,7 +128,7 @@ class TicketApiController extends Controller
             'description' => ['required', 'string'],
             'type' => ['required', Rule::in(['question', 'incident', 'request', 'task', 'other'])],
             'priority' => ['required', Rule::in(['low', 'medium', 'high', 'urgent'])],
-            'status' => ['nullable', Rule::in(['open', 'pending', 'resolved'])],
+            'status' => ['nullable', Rule::in(['open', 'in_progress', 'pending'])],
             'assigned_operator_id' => ['nullable', 'integer', Rule::exists('users', 'id')],
             'cc_emails' => ['nullable', 'string'],
         ]);
@@ -169,7 +169,8 @@ class TicketApiController extends Controller
                 'cc_emails' => $ccEmails,
                 'last_activity_at' => now(),
                 'first_response_at' => $user->isOperator() ? now() : null,
-                'resolved_at' => $initialStatus === 'resolved' ? now() : null,
+                'resolved_at' => null,
+                'closed_at' => null,
             ]);
 
             $ticket->update([
@@ -269,9 +270,267 @@ class TicketApiController extends Controller
         }
 
         $availableInboxes = $this->inboxesForUser($request->user());
+        $availableEntities = $this->entitiesForUser($request->user());
+        $availableContacts = Contact::query()
+            ->whereIn('entity_id', $availableEntities->pluck('id'))
+            ->where('is_active', true)
+            ->orderBy('name')
+            ->get();
 
         return response()->json([
-            'data' => $this->serializeTicketDetail($ticket, $operators, $availableInboxes, $request),
+            'data' => $this->serializeTicketDetail(
+                $ticket,
+                $operators,
+                $availableInboxes,
+                $availableEntities,
+                $availableContacts,
+                $request
+            ),
+        ]);
+    }
+
+    /**
+     * Full update for ticket data.
+     */
+    public function update(Request $request, Ticket $ticket): JsonResponse
+    {
+        $this->authorize('updateMetadata', $ticket);
+
+        $validated = $request->validate([
+            'subject' => ['sometimes', 'required', 'string', 'max:255'],
+            'description' => ['sometimes', 'nullable', 'string'],
+            'priority' => ['sometimes', Rule::in(['low', 'medium', 'high', 'urgent'])],
+            'type' => ['sometimes', Rule::in(['question', 'incident', 'request', 'task', 'other'])],
+            'status' => ['sometimes', Rule::in(['open', 'in_progress', 'pending', 'closed', 'cancelled'])],
+            'inbox_id' => ['sometimes', 'integer', Rule::exists('inboxes', 'id')],
+            'entity_id' => ['sometimes', 'integer', Rule::exists('entities', 'id')],
+            'contact_id' => ['sometimes', 'nullable', 'integer', Rule::exists('contacts', 'id')],
+            'assigned_operator_id' => ['sometimes', 'nullable', 'integer', Rule::exists('users', 'id')],
+            'cc_emails' => ['sometimes', 'nullable', 'string'],
+        ]);
+
+        if ($validated === []) {
+            return response()->json([
+                'message' => 'No changes to apply.',
+            ]);
+        }
+
+        $user = $request->user();
+        $updates = [];
+        $changes = [];
+        $statusChanged = false;
+        $assignmentChanged = false;
+
+        $targetInboxId = (int) ($validated['inbox_id'] ?? $ticket->inbox_id);
+        $targetEntityId = (int) ($validated['entity_id'] ?? $ticket->entity_id);
+
+        if (array_key_exists('inbox_id', $validated) && $targetInboxId !== (int) $ticket->inbox_id) {
+            if (! $user->hasInboxAccess($targetInboxId)) {
+                abort(403, 'You cannot move this ticket to an inbox you cannot access.');
+            }
+
+            $updates['inbox_id'] = $targetInboxId;
+            $changes[] = ['field' => 'inbox_id', 'old' => $ticket->inbox_id, 'new' => $targetInboxId];
+        }
+
+        if (array_key_exists('entity_id', $validated) && $targetEntityId !== (int) $ticket->entity_id) {
+            $updates['entity_id'] = $targetEntityId;
+            $changes[] = ['field' => 'entity_id', 'old' => $ticket->entity_id, 'new' => $targetEntityId];
+        }
+
+        if (array_key_exists('subject', $validated) && $validated['subject'] !== $ticket->subject) {
+            $updates['subject'] = $validated['subject'];
+            $changes[] = ['field' => 'subject', 'old' => $ticket->subject, 'new' => $validated['subject']];
+        }
+
+        if (array_key_exists('description', $validated) && $validated['description'] !== $ticket->description) {
+            $updates['description'] = $validated['description'];
+            $changes[] = ['field' => 'description', 'old' => $ticket->description, 'new' => $validated['description']];
+        }
+
+        if (array_key_exists('priority', $validated) && $validated['priority'] !== $ticket->priority) {
+            $updates['priority'] = $validated['priority'];
+            $changes[] = ['field' => 'priority', 'old' => $ticket->priority, 'new' => $validated['priority']];
+        }
+
+        if (array_key_exists('type', $validated) && $validated['type'] !== $ticket->type) {
+            $updates['type'] = $validated['type'];
+            $changes[] = ['field' => 'type', 'old' => $ticket->type, 'new' => $validated['type']];
+        }
+
+        if (array_key_exists('cc_emails', $validated)) {
+            $newCc = $this->parseCcEmails($validated['cc_emails']);
+            $currentCc = collect($ticket->cc_emails ?? [])
+                ->map(fn (string $email) => mb_strtolower(trim($email)))
+                ->sort()
+                ->values()
+                ->all();
+            $normalizedNewCc = collect($newCc)
+                ->map(fn (string $email) => mb_strtolower(trim($email)))
+                ->sort()
+                ->values()
+                ->all();
+
+            if ($currentCc !== $normalizedNewCc) {
+                $updates['cc_emails'] = $newCc;
+                $changes[] = [
+                    'field' => 'cc_emails',
+                    'old' => implode(', ', $ticket->cc_emails ?? []),
+                    'new' => implode(', ', $newCc),
+                ];
+            }
+        }
+
+        if (array_key_exists('contact_id', $validated) || array_key_exists('entity_id', $validated)) {
+            $newContactId = $validated['contact_id'] ?? $ticket->contact_id;
+
+            if ($newContactId === null) {
+                if ($ticket->contact_id !== null) {
+                    $updates['contact_id'] = null;
+                    $changes[] = ['field' => 'contact_id', 'old' => $ticket->contact_id, 'new' => null];
+                }
+            } else {
+                $contact = Contact::query()
+                    ->whereKey((int) $newContactId)
+                    ->where('entity_id', $targetEntityId)
+                    ->where('is_active', true)
+                    ->firstOrFail();
+
+                if ((int) $ticket->contact_id !== (int) $contact->id) {
+                    $updates['contact_id'] = $contact->id;
+                    $changes[] = ['field' => 'contact_id', 'old' => $ticket->contact_id, 'new' => $contact->id];
+                }
+            }
+        }
+
+        if (array_key_exists('assigned_operator_id', $validated) || array_key_exists('inbox_id', $validated)) {
+            $newOperator = $this->resolveAssignedOperator(
+                array_key_exists('assigned_operator_id', $validated) ? $validated['assigned_operator_id'] : $ticket->assigned_operator_id,
+                $targetInboxId
+            );
+
+            if ($ticket->assigned_operator_id !== $newOperator?->id) {
+                $updates['assigned_operator_id'] = $newOperator?->id;
+                $changes[] = [
+                    'field' => 'assigned_operator_id',
+                    'old' => $ticket->assigned_operator_id,
+                    'new' => $newOperator?->id,
+                ];
+                $assignmentChanged = true;
+            }
+        }
+
+        if (array_key_exists('status', $validated) && $validated['status'] !== $ticket->status) {
+            $newStatus = $validated['status'];
+
+            if (
+                in_array($newStatus, ['closed', 'cancelled'], true)
+                && $ticket->assigned_operator_id
+                && $ticket->assigned_operator_id !== $request->user()->id
+            ) {
+                abort(403, 'Only the assigned operator can close or cancel this ticket.');
+            }
+
+            $updates['status'] = $newStatus;
+
+            foreach ($this->statusTimestampUpdates($ticket, $newStatus) as $field => $value) {
+                $updates[$field] = $value;
+            }
+
+            $changes[] = ['field' => 'status', 'old' => $ticket->status, 'new' => $newStatus];
+            $statusChanged = true;
+        }
+
+        if ($changes === []) {
+            return response()->json([
+                'message' => 'No changes to apply.',
+                'data' => [
+                    'ticket_id' => $ticket->id,
+                ],
+            ]);
+        }
+
+        $updates['last_activity_at'] = now();
+
+        DB::transaction(function () use ($ticket, $updates, $changes, $user): void {
+            $ticket->update($updates);
+
+            foreach ($changes as $change) {
+                $action = match ($change['field']) {
+                    'status' => 'status_updated',
+                    'assigned_operator_id' => 'assignment_updated',
+                    default => 'field_updated',
+                };
+
+                TicketActivityLogger::log(
+                    $ticket,
+                    $action,
+                    $change['field'],
+                    $change['old'],
+                    $change['new'],
+                    'user',
+                    $user->id
+                );
+            }
+        });
+
+        $ticket->refresh();
+
+        if ($statusChanged) {
+            $this->notificationService->notifyStatusUpdated($ticket);
+        }
+
+        if ($assignmentChanged) {
+            $this->notificationService->notifyAssignmentUpdated($ticket);
+        }
+
+        return response()->json([
+            'message' => 'Ticket updated successfully.',
+            'data' => [
+                'ticket_id' => $ticket->id,
+            ],
+        ]);
+    }
+
+    /**
+     * Cancel a ticket using the status lifecycle.
+     */
+    public function destroy(Request $request, Ticket $ticket): JsonResponse
+    {
+        $this->authorize('updateStatus', $ticket);
+
+        if ($ticket->status === 'cancelled') {
+            return response()->json([
+                'message' => 'Ticket already cancelled.',
+            ]);
+        }
+
+        if ($ticket->assigned_operator_id && $ticket->assigned_operator_id !== $request->user()->id) {
+            abort(403, 'Only the assigned operator can close or cancel this ticket.');
+        }
+
+        $oldStatus = $ticket->status;
+
+        $ticket->update(array_merge([
+            'status' => 'cancelled',
+            'last_activity_at' => now(),
+        ], $this->statusTimestampUpdates($ticket, 'cancelled')));
+
+        TicketActivityLogger::log(
+            $ticket,
+            'status_updated',
+            'status',
+            $oldStatus,
+            'cancelled',
+            'user',
+            $request->user()->id
+        );
+
+        $this->notificationService->notifyStatusUpdated($ticket);
+
+        return response()->json([
+            'message' => 'Ticket cancelled successfully.',
+            'data' => ['status' => $ticket->status],
         ]);
     }
 
@@ -283,7 +542,7 @@ class TicketApiController extends Controller
         $this->authorize('updateStatus', $ticket);
 
         $validated = $request->validate([
-            'status' => ['required', Rule::in(['open', 'pending', 'resolved', 'closed'])],
+            'status' => ['required', Rule::in(['open', 'in_progress', 'pending', 'closed', 'cancelled'])],
         ]);
 
         $oldStatus = $ticket->status;
@@ -297,19 +556,17 @@ class TicketApiController extends Controller
         }
 
         if (
-            in_array($newStatus, ['resolved', 'closed'], true)
+            in_array($newStatus, ['closed', 'cancelled'], true)
             && $ticket->assigned_operator_id
             && $ticket->assigned_operator_id !== $request->user()->id
         ) {
-            abort(403, 'Only the assigned operator can resolve or close this ticket.');
+            abort(403, 'Only the assigned operator can close or cancel this ticket.');
         }
 
-        $ticket->update([
+        $ticket->update(array_merge([
             'status' => $newStatus,
             'last_activity_at' => now(),
-            'resolved_at' => in_array($newStatus, ['resolved', 'closed'], true) ? ($ticket->resolved_at ?? now()) : null,
-            'closed_at' => $newStatus === 'closed' ? now() : null,
-        ]);
+        ], $this->statusTimestampUpdates($ticket, $newStatus)));
 
         TicketActivityLogger::log(
             $ticket,
@@ -644,12 +901,34 @@ class TicketApiController extends Controller
         foreach ($emails as $email) {
             if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
                 throw ValidationException::withMessages([
-                    'cc_emails' => "Email invalido em Conhecimento: {$email}",
+                    'cc_emails' => "Invalid CC email: {$email}",
                 ]);
             }
         }
 
         return $emails->all();
+    }
+
+    /**
+     * Build timestamp updates for a status transition.
+     *
+     * @return array<string, mixed>
+     */
+    private function statusTimestampUpdates(Ticket $ticket, string $newStatus): array
+    {
+        if ($newStatus === 'closed') {
+            $timestamp = now();
+
+            return [
+                'resolved_at' => $ticket->resolved_at ?? $timestamp,
+                'closed_at' => $ticket->closed_at ?? $timestamp,
+            ];
+        }
+
+        return [
+            'resolved_at' => null,
+            'closed_at' => null,
+        ];
     }
 
     /**
@@ -679,10 +958,20 @@ class TicketApiController extends Controller
      *
      * @param  \Illuminate\Support\Collection<int, User>  $operators
      * @param  \Illuminate\Support\Collection<int, Inbox>  $availableInboxes
+     * @param  \Illuminate\Support\Collection<int, Entity>  $availableEntities
+     * @param  \Illuminate\Support\Collection<int, Contact>  $availableContacts
      * @return array<string, mixed>
      */
-    private function serializeTicketDetail(Ticket $ticket, $operators, $availableInboxes, Request $request): array
+    private function serializeTicketDetail(
+        Ticket $ticket,
+        $operators,
+        $availableInboxes,
+        $availableEntities,
+        $availableContacts,
+        Request $request
+    ): array
     {
+
         return [
             'id' => $ticket->id,
             'ticket_number' => $ticket->ticket_number,
@@ -704,6 +993,9 @@ class TicketApiController extends Controller
                 'can_update_status' => $request->user()->can('updateStatus', $ticket),
                 'can_assign' => $request->user()->can('assign', $ticket),
                 'can_update_metadata' => $request->user()->can('updateMetadata', $ticket),
+                'can_update' => $request->user()->can('updateMetadata', $ticket),
+                'can_delete' => false,
+                'can_manage_messages' => false,
             ],
             'messages' => $ticket->messages->sortByDesc('created_at')->values()->map(fn (TicketMessage $message) => [
                 'id' => $message->id,
@@ -713,6 +1005,8 @@ class TicketApiController extends Controller
                 'body' => $message->body,
                 'is_internal' => $message->is_internal,
                 'created_at' => optional($message->created_at)?->toIso8601String(),
+                'can_edit' => false,
+                'can_delete' => false,
                 'attachments' => $message->attachmentsList->map(fn (TicketAttachment $attachment) => [
                     'id' => $attachment->id,
                     'uuid' => $attachment->uuid,
@@ -741,7 +1035,27 @@ class TicketApiController extends Controller
                 'id' => $inbox->id,
                 'name' => $inbox->name,
             ])->values()->all(),
+            'available_entities' => $availableEntities->map(fn (Entity $entity) => [
+                'id' => $entity->id,
+                'name' => $entity->name,
+            ])->values()->all(),
+            'available_contacts' => $availableContacts->map(fn (Contact $contact) => [
+                'id' => $contact->id,
+                'name' => $contact->name,
+                'email' => $contact->email,
+                'entity_id' => $contact->entity_id,
+            ])->values()->all(),
         ];
     }
 }
+
+
+
+
+
+
+
+
+
+
 

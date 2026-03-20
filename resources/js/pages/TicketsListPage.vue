@@ -26,9 +26,10 @@ const filters = reactive({
 
 const statusLabels = {
     open: 'Aberto',
-    pending: 'Pendente',
-    resolved: 'Resolvido',
+    in_progress: 'Em tratamento',
+    pending: 'Aguardando cliente',
     closed: 'Fechado',
+    cancelled: 'Cancelado',
 };
 
 const priorityLabels = {
@@ -309,9 +310,10 @@ th, td {
 }
 
 .badge-open { color: #166534; background: #dcfce7; border-color: #bbf7d0; }
+.badge-in_progress { color: #1d4ed8; background: #dbeafe; border-color: #bfdbfe; }
 .badge-pending { color: #854d0e; background: #fef9c3; border-color: #fde68a; }
-.badge-resolved { color: #1d4ed8; background: #dbeafe; border-color: #bfdbfe; }
-.badge-closed { color: #7f1d1d; background: #fee2e2; border-color: #fecaca; }
+.badge-closed { color: #166534; background: #dcfce7; border-color: #86efac; }
+.badge-cancelled { color: #7f1d1d; background: #fee2e2; border-color: #fecaca; }
 
 .pager {
     margin-top: 0.8rem;
@@ -330,3 +332,5 @@ th, td {
     }
 }
 </style>
+
+

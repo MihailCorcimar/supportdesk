@@ -230,6 +230,23 @@ const regenerateInvite = async (user) => {
     }
 };
 
+const deleteUser = async (user) => {
+    if (!window.confirm(`Eliminar utilizador ${user.name}?`)) {
+        return;
+    }
+
+    error.value = '';
+    success.value = '';
+
+    try {
+        await api.delete(`/users/${user.id}`);
+        success.value = 'Utilizador eliminado com sucesso.';
+        await fetchUsers();
+    } catch (exception) {
+        error.value = exception?.response?.data?.message || 'Nao foi possivel eliminar utilizador.';
+    }
+};
+
 onMounted(load);
 </script>
 
@@ -390,6 +407,8 @@ onMounted(load);
                                 >
                                     Gerir acessos
                                 </button>
+
+                                <button type="button" class="danger" @click="deleteUser(user)">Eliminar</button>
                             </div>
 
                             <div v-if="editingInboxesUserId === user.id" class="editor-box">
@@ -525,6 +544,12 @@ button.ghost {
     border-color: #cbd5e1;
     background: #fff;
     color: #0f172a;
+}
+
+button.danger {
+    border-color: #b91c1c;
+    background: #b91c1c;
+    color: #fff;
 }
 
 .checkbox-line {

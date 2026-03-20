@@ -21,7 +21,7 @@ return new class extends Migration
             $table->foreignId('assigned_operator_id')->nullable()->constrained('users')->nullOnDelete();
             $table->string('subject');
             $table->longText('description')->nullable();
-            $table->enum('status', ['open', 'pending', 'resolved', 'closed'])->default('open');
+            $table->enum('status', ['open', 'in_progress', 'pending', 'closed', 'cancelled'])->default('open');
             $table->enum('priority', ['low', 'medium', 'high', 'urgent'])->default('medium');
             $table->enum('type', ['question', 'incident', 'request', 'task', 'other'])->default('request');
             $table->json('cc_emails')->nullable();
@@ -48,3 +48,4 @@ return new class extends Migration
         Schema::dropIfExists('tickets');
     }
 };
+

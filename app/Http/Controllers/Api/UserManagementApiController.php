@@ -315,6 +315,29 @@ class UserManagementApiController extends Controller
     }
 
     /**
+     * Delete user account.
+     */
+    public function destroy(Request $request, User $user): JsonResponse
+    {
+        $actor = $request->user();
+        $this->assertCanManageTargetUser($actor, $user);
+
+        if ($actor->id === $user->id) {
+            return response()->json([
+                'message' => 'You cannot delete your own account.',
+            ], 422);
+        }
+
+        UserActivityLogger::log($actor, $user, 'user_deleted');
+
+        $user->delete();
+
+        return response()->json([
+            'message' => 'User deleted successfully.',
+        ]);
+    }
+
+    /**
      * Serialize user for frontend.
      *
      * @return array<string, mixed>

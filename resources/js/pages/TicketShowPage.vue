@@ -1,4 +1,4 @@
-Ôªø<script setup>
+<script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import api from '../api/client';
@@ -30,9 +30,10 @@ const metadataForm = reactive({
 
 const statusLabels = {
     open: 'Aberto',
-    pending: 'Pendente',
-    resolved: 'Resolvido',
+    in_progress: 'Em tratamento',
+    pending: 'Aguardando cliente',
     closed: 'Fechado',
+    cancelled: 'Cancelado',
 };
 
 const priorityLabels = {
@@ -43,7 +44,7 @@ const priorityLabels = {
 };
 
 const typeLabels = {
-    question: 'Quest√£o',
+    question: 'Quest„o',
     incident: 'Incidente',
     request: 'Pedido',
     task: 'Tarefa',
@@ -54,7 +55,7 @@ const actionLabels = {
     ticket_created: 'Ticket criado',
     message_added: 'Mensagem adicionada',
     status_updated: 'Estado alterado',
-    assignment_updated: 'Atribui√ß√£o alterada',
+    assignment_updated: 'AtribuiÁ„o alterada',
     field_updated: 'Campo alterado',
     attachments_added: 'Anexos adicionados',
 };
@@ -233,7 +234,16 @@ onMounted(loadTicket);
                 <h1>{{ ticket.ticket_number }}</h1>
                 <p class="muted">{{ ticket.subject }}</p>
             </div>
-            <RouterLink class="btn-secondary" :to="{ name: 'tickets.index' }">Voltar</RouterLink>
+            <div class="header-actions">
+                <RouterLink class="btn-secondary" :to="{ name: 'tickets.index' }">Voltar</RouterLink>
+                <RouterLink
+                    v-if="ticket.permissions?.can_update"
+                    class="btn-primary"
+                    :to="{ name: 'tickets.edit', params: { id: ticket.id } }"
+                >
+                    Editar completo
+                </RouterLink>
+            </div>
         </div>
 
         <p v-if="error" class="error">{{ error }}</p>
@@ -254,7 +264,7 @@ onMounted(loadTicket);
         </article>
 
         <article class="card" v-if="isOperator">
-            <h2>Gest√£o operacional</h2>
+            <h2>Gest„o operacional</h2>
             <div class="actions-grid">
                 <form @submit.prevent="updateStatus" class="inline-form" v-if="canUpdateStatus">
                     <label>
@@ -272,14 +282,14 @@ onMounted(loadTicket);
                     <label>
                         Operador
                         <select v-model="assignmentForm.assigned_operator_id">
-                            <option value="">Sem atribui√ß√£o</option>
+                            <option value="">Sem atribuiÁ„o</option>
                             <option v-for="operator in ticket.operators" :key="operator.id" :value="String(operator.id)">
                                 {{ operator.name }}
                             </option>
                         </select>
                     </label>
                     <button class="btn-primary" type="submit" :disabled="savingAssignment">
-                        {{ savingAssignment ? 'A guardar...' : 'Atualizar atribui√ß√£o' }}
+                        {{ savingAssignment ? 'A guardar...' : 'Atualizar atribuiÁ„o' }}
                     </button>
                 </form>
             </div>
@@ -314,7 +324,7 @@ onMounted(loadTicket);
                 </label>
 
                 <label class="full">
-                    Conhecimento (emails separados por v√≠rgula)
+                    Conhecimento (emails separados por vÌrgula)
                     <input v-model="metadataForm.cc_emails" placeholder="exemplo@dominio.pt, outro@dominio.pt">
                 </label>
 
@@ -388,7 +398,7 @@ onMounted(loadTicket);
 
             <div class="right-column">
                 <article class="card">
-                    <h2>Hist√≥rico</h2>
+                    <h2>HistÛrico</h2>
                     <div class="stack">
                         <article class="timeline-item" v-for="log in ticket.logs" :key="log.id">
                             <div class="timeline-head">
@@ -502,6 +512,7 @@ textarea { min-height: 120px; resize: vertical; }
     color: #0f172a;
 }
 
+
 .badge {
     display: inline-flex;
     padding: 0.18rem 0.52rem;
@@ -510,9 +521,10 @@ textarea { min-height: 120px; resize: vertical; }
     border: 1px solid transparent;
 }
 .badge-open { color: #166534; background: #dcfce7; border-color: #bbf7d0; }
+.badge-in_progress { color: #1d4ed8; background: #dbeafe; border-color: #bfdbfe; }
 .badge-pending { color: #854d0e; background: #fef9c3; border-color: #fde68a; }
-.badge-resolved { color: #1d4ed8; background: #dbeafe; border-color: #bfdbfe; }
-.badge-closed { color: #7f1d1d; background: #fee2e2; border-color: #fecaca; }
+.badge-closed { color: #166534; background: #dcfce7; border-color: #86efac; }
+.badge-cancelled { color: #7f1d1d; background: #fee2e2; border-color: #fecaca; }
 
 .timeline-item {
     border: 1px solid #e5edf5;
@@ -525,6 +537,13 @@ textarea { min-height: 120px; resize: vertical; }
     display: flex;
     justify-content: space-between;
     gap: 0.6rem;
+}
+
+
+.header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
 }
 
 .timeline-item p {
@@ -560,4 +579,7 @@ textarea { min-height: 120px; resize: vertical; }
     .details-grid { grid-template-columns: 1fr; }
 }
 </style>
+
+
+
 

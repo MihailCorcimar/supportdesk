@@ -98,27 +98,6 @@ class TicketMessageApiController extends Controller
                 ]);
             }
 
-            if (! $isInternal && in_array($ticket->status, ['resolved', 'closed'], true)) {
-                $oldStatus = $ticket->status;
-
-                $ticket->update([
-                    'status' => 'open',
-                    'resolved_at' => null,
-                    'closed_at' => null,
-                ]);
-
-                TicketActivityLogger::log(
-                    $ticket,
-                    'status_updated',
-                    'status',
-                    $oldStatus,
-                    'open',
-                    $user->isClient() ? 'contact' : 'user',
-                    $user->isOperator() ? $user->id : null,
-                    $user->isClient() ? $contact?->id : null
-                );
-            }
-
             $ticketUpdates = [
                 'last_activity_at' => now(),
             ];
@@ -177,5 +156,36 @@ class TicketMessageApiController extends Controller
             'message' => 'Message sent successfully.',
         ], 201);
     }
-}
 
+    /**
+     * Messages are immutable for audit history.
+     */
+    public function update(Request $request, Ticket $ticket, TicketMessage $message): JsonResponse
+    {
+        if ($message->ticket_id !== $ticket->id) {
+            abort(404);
+        }
+
+        $this->authorize('view', $ticket);
+
+        return response()->json([
+            'message' => 'Ticket messages are immutable and cannot be edited.',
+        ], 405);
+    }
+
+    /**
+     * Messages are immutable for audit history.
+     */
+    public function destroy(Request $request, Ticket $ticket, TicketMessage $message): JsonResponse
+    {
+        if ($message->ticket_id !== $ticket->id) {
+            abort(404);
+        }
+
+        $this->authorize('view', $ticket);
+
+        return response()->json([
+            'message' => 'Ticket messages are immutable and cannot be deleted.',
+        ], 405);
+    }
+}

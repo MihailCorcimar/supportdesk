@@ -16,7 +16,7 @@ const options = ref({
     entities: [],
     contacts: [],
     operators: [],
-    create_statuses: ['open', 'pending', 'resolved'],
+    create_statuses: ['open', 'in_progress', 'pending'],
     priorities: ['low', 'medium', 'high', 'urgent'],
     types: ['question', 'incident', 'request', 'task', 'other'],
 });
@@ -43,8 +43,8 @@ const priorityLabels = {
 
 const statusLabels = {
     open: 'Aberto',
-    pending: 'Pendente',
-    resolved: 'Resolvido',
+    in_progress: 'Em tratamento',
+    pending: 'Aguardando cliente',
 };
 
 const isOperator = computed(() => auth.state.user?.role === 'operator');
@@ -304,3 +304,4 @@ textarea { min-height: 130px; resize: vertical; }
     .col-span-2, .col-span-3 { grid-column: span 1; }
 }
 </style>
+

@@ -51,22 +51,26 @@ onMounted(loadSummary);
                     <strong>{{ summary.totals.open }}</strong>
                 </article>
                 <article class="card stat-card">
-                    <h2>Pendentes</h2>
-                    <strong>{{ summary.totals.pending }}</strong>
+                    <h2>Em tratamento</h2>
+                    <strong>{{ summary.totals.in_progress }}</strong>
                 </article>
                 <article class="card stat-card">
-                    <h2>Resolvidos</h2>
-                    <strong>{{ summary.totals.resolved }}</strong>
+                    <h2>Aguardando cliente</h2>
+                    <strong>{{ summary.totals.pending }}</strong>
                 </article>
                 <article class="card stat-card">
                     <h2>Fechados</h2>
                     <strong>{{ summary.totals.closed }}</strong>
                 </article>
+                <article class="card stat-card">
+                    <h2>Cancelados</h2>
+                    <strong>{{ summary.totals.cancelled }}</strong>
+                </article>
             </div>
 
-            <div class="cards">
+            <div class="cards cards-two">
                 <article class="card stat-card">
-                    <h2>Tempo médio 1 resposta</h2>
+                    <h2>Tempo medio 1 resposta</h2>
                     <strong>{{ minutesToLabel(summary.averages.first_response_minutes) }}</strong>
                     <p class="muted">
                         SLA {{ summary.sla.first_response_hours }}h:
@@ -74,7 +78,7 @@ onMounted(loadSummary);
                     </p>
                 </article>
                 <article class="card stat-card">
-                    <h2>Tempo médio resolução</h2>
+                    <h2>Tempo medio resolucao</h2>
                     <strong>{{ minutesToLabel(summary.averages.resolution_minutes) }}</strong>
                     <p class="muted">
                         SLA {{ summary.sla.resolution_hours }}h:
@@ -84,16 +88,17 @@ onMounted(loadSummary);
             </div>
 
             <article class="card">
-                <h2 style="margin-top:0;">Distribuição por Inbox</h2>
+                <h2 style="margin-top:0;">Distribuicao por Inbox</h2>
                 <table>
                     <thead>
                         <tr>
                             <th>Inbox</th>
                             <th>Total</th>
                             <th>Abertos</th>
-                            <th>Pendentes</th>
-                            <th>Resolvidos</th>
+                            <th>Em tratamento</th>
+                            <th>Aguardando cliente</th>
                             <th>Fechados</th>
+                            <th>Cancelados</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -101,12 +106,13 @@ onMounted(loadSummary);
                             <td>{{ row.inbox_name }}</td>
                             <td>{{ row.total }}</td>
                             <td>{{ row.open }}</td>
+                            <td>{{ row.in_progress }}</td>
                             <td>{{ row.pending }}</td>
-                            <td>{{ row.resolved }}</td>
                             <td>{{ row.closed }}</td>
+                            <td>{{ row.cancelled }}</td>
                         </tr>
                         <tr v-if="!summary.by_inbox.length">
-                            <td colspan="6" class="muted">Sem dados para apresentar.</td>
+                            <td colspan="7" class="muted">Sem dados para apresentar.</td>
                         </tr>
                     </tbody>
                 </table>
@@ -122,8 +128,12 @@ h1, h2 { margin: 0; }
 
 .cards {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 0.75rem;
+}
+
+.cards-two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .card {
@@ -161,9 +171,16 @@ th, td {
 .muted { color: #475569; }
 .error { color: #991b1b; }
 
-@media (max-width: 1100px) {
+@media (max-width: 1200px) {
     .cards {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 900px) {
+    .cards,
+    .cards-two {
+        grid-template-columns: 1fr;
     }
 }
 </style>

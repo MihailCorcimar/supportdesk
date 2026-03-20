@@ -46,7 +46,8 @@ class TicketPolicy
     {
         return $user->is_active
             && $user->isOperator()
-            && $user->hasInboxAccess($ticket->inbox_id);
+            && $user->hasInboxAccess($ticket->inbox_id)
+            && ! $this->isTerminal($ticket);
     }
 
     /**
@@ -62,7 +63,7 @@ class TicketPolicy
      */
     public function reply(User $user, Ticket $ticket): bool
     {
-        return $this->view($user, $ticket);
+        return $this->view($user, $ticket) && ! $this->isTerminal($ticket);
     }
 
     /**
@@ -80,5 +81,12 @@ class TicketPolicy
     {
         return $this->update($user, $ticket);
     }
-}
 
+    /**
+     * Determine whether the ticket is in a terminal state.
+     */
+    private function isTerminal(Ticket $ticket): bool
+    {
+        return in_array($ticket->status, ['closed', 'cancelled'], true);
+    }
+}

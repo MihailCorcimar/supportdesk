@@ -2,8 +2,10 @@ import { createRouter, createWebHistory } from 'vue-router';
 import LoginPage from '../pages/LoginPage.vue';
 import AcceptInvitePage from '../pages/AcceptInvitePage.vue';
 import DashboardPage from '../pages/DashboardPage.vue';
+import ManagementPage from '../pages/ManagementPage.vue';
 import TicketsListPage from '../pages/TicketsListPage.vue';
 import TicketCreatePage from '../pages/TicketCreatePage.vue';
+import TicketEditPage from '../pages/TicketEditPage.vue';
 import TicketShowPage from '../pages/TicketShowPage.vue';
 import UsersManagementPage from '../pages/UsersManagementPage.vue';
 import { useAuthStore } from '../stores/auth';
@@ -44,6 +46,12 @@ const routes = [
         meta: { requiresAuth: true, requiresUserManager: true },
     },
     {
+        path: '/management',
+        name: 'management',
+        component: ManagementPage,
+        meta: { requiresAuth: true, requiresUserManager: true },
+    },
+    {
         path: '/tickets/new',
         name: 'tickets.create',
         component: TicketCreatePage,
@@ -54,6 +62,12 @@ const routes = [
         name: 'tickets.show',
         component: TicketShowPage,
         meta: { requiresAuth: true },
+    },
+    {
+        path: '/tickets/:id/edit',
+        name: 'tickets.edit',
+        component: TicketEditPage,
+        meta: { requiresAuth: true, requiresOperator: true },
     },
     {
         path: '/:pathMatch(.*)*',
@@ -82,6 +96,10 @@ router.beforeEach(async (to) => {
     }
 
     if (to.meta.requiresUserManager && !auth.state.user?.can_manage_users) {
+        return { name: 'tickets.index' };
+    }
+
+    if (to.meta.requiresOperator && auth.state.user?.role !== 'operator') {
         return { name: 'tickets.index' };
     }
 

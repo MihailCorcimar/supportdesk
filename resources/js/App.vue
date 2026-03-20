@@ -30,6 +30,7 @@ const logout = async () => {
                     <RouterLink :to="{ name: 'tickets.index' }">Tickets</RouterLink>
                     <RouterLink :to="{ name: 'tickets.create' }">Novo Ticket</RouterLink>
                     <RouterLink v-if="user.can_manage_users" :to="{ name: 'users.index' }">Utilizadores</RouterLink>
+                    <RouterLink v-if="user.can_manage_users" :to="{ name: 'management' }">Configuracao</RouterLink>
                     <button type="button" @click="logout">Terminar sessao</button>
                 </nav>
             </div>
