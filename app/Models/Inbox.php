@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Inbox extends Model
@@ -40,5 +41,15 @@ class Inbox extends Model
     public function tickets(): HasMany
     {
         return $this->hasMany(Ticket::class);
+    }
+
+    /**
+     * Get operators linked to this inbox.
+     */
+    public function operators(): BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'inbox_user')
+            ->withPivot('can_manage_users')
+            ->withTimestamps();
     }
 }

@@ -1,9 +1,11 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import LoginPage from '../pages/LoginPage.vue';
+import AcceptInvitePage from '../pages/AcceptInvitePage.vue';
 import DashboardPage from '../pages/DashboardPage.vue';
 import TicketsListPage from '../pages/TicketsListPage.vue';
 import TicketCreatePage from '../pages/TicketCreatePage.vue';
 import TicketShowPage from '../pages/TicketShowPage.vue';
+import UsersManagementPage from '../pages/UsersManagementPage.vue';
 import { useAuthStore } from '../stores/auth';
 
 const routes = [
@@ -11,7 +13,13 @@ const routes = [
         path: '/login',
         name: 'login',
         component: LoginPage,
-        meta: { guestOnly: true },
+        meta: { guestOnly: true, hideShell: true },
+    },
+    {
+        path: '/accept-invite',
+        name: 'invite.accept',
+        component: AcceptInvitePage,
+        meta: { guestOnly: true, hideShell: true },
     },
     {
         path: '/',
@@ -28,6 +36,12 @@ const routes = [
         name: 'dashboard',
         component: DashboardPage,
         meta: { requiresAuth: true },
+    },
+    {
+        path: '/users',
+        name: 'users.index',
+        component: UsersManagementPage,
+        meta: { requiresAuth: true, requiresUserManager: true },
     },
     {
         path: '/tickets/new',
@@ -64,6 +78,10 @@ router.beforeEach(async (to) => {
     }
 
     if (to.meta.guestOnly && auth.state.user) {
+        return { name: 'tickets.index' };
+    }
+
+    if (to.meta.requiresUserManager && !auth.state.user?.can_manage_users) {
         return { name: 'tickets.index' };
     }
 

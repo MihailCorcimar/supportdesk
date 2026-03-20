@@ -92,7 +92,9 @@ class User extends Authenticatable
      */
     public function accessibleInboxes(): BelongsToMany
     {
-        return $this->belongsToMany(Inbox::class, 'inbox_user')->withTimestamps();
+        return $this->belongsToMany(Inbox::class, 'inbox_user')
+            ->withPivot('can_manage_users')
+            ->withTimestamps();
     }
 
     /**
@@ -105,6 +107,31 @@ class User extends Authenticatable
         }
 
         return $this->accessibleInboxes()->whereKey($inboxId)->exists();
+    }
+
+    /**
+     * Get inboxes where the operator can manage users.
+     */
+    public function manageableInboxes(): BelongsToMany
+    {
+        return $this->accessibleInboxes()->wherePivot('can_manage_users', true);
+    }
+
+    /**
+     * Check if the user can manage users in any inbox.
+     */
+    public function canManageUsers(): bool
+    {
+        return $this->isOperator() && $this->manageableInboxes()->exists();
+    }
+
+    /**
+     * Check if the user can manage users in a specific inbox.
+     */
+    public function hasInboxManagementAccess(int $inboxId): bool
+    {
+        return $this->isOperator()
+            && $this->manageableInboxes()->where('inboxes.id', $inboxId)->exists();
     }
 
     /**

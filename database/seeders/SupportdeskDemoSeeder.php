@@ -59,7 +59,11 @@ class SupportdeskDemoSeeder extends Seeder
             $client->update(['role' => 'client', 'is_active' => true]);
         }
 
-        $operator->accessibleInboxes()->syncWithoutDetaching($inboxes->pluck('id')->all());
+        $operator->accessibleInboxes()->syncWithoutDetaching(
+            $inboxes->mapWithKeys(fn (Inbox $inbox) => [
+                $inbox->id => ['can_manage_users' => true],
+            ])->all()
+        );
 
         $entity = Entity::query()->firstOrCreate(
             ['slug' => 'cliente-demo'],

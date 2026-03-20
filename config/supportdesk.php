@@ -21,4 +21,8 @@ return [
         'first_response_hours' => (int) env('SUPPORTDESK_SLA_FIRST_RESPONSE_HOURS', 4),
         'resolution_hours' => (int) env('SUPPORTDESK_SLA_RESOLUTION_HOURS', 24),
     ],
+
+    'invites' => [
+        'expiration_hours' => (int) env('SUPPORTDESK_INVITE_EXPIRATION_HOURS', 72),
+    ],
 ];

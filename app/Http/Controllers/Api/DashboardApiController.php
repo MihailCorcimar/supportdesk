@@ -53,7 +53,7 @@ class DashboardApiController extends Controller
 
                 return [
                     'inbox_id' => $first?->inbox_id,
-                    'inbox_name' => $first?->inbox?->name ?? 'Sem Inbox',
+                    'inbox_name' => $first?->inbox?->name ?? 'No Inbox',
                     'total' => $group->count(),
                     'open' => $group->where('status', 'open')->count(),
                     'pending' => $group->where('status', 'pending')->count(),

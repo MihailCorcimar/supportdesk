@@ -4,6 +4,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use App\Http\Middleware\EnsureUserIsOperator;
+use App\Http\Middleware\EnsureUserCanManageUsers;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -14,6 +15,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'operator' => EnsureUserIsOperator::class,
+            'manage-users' => EnsureUserCanManageUsers::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

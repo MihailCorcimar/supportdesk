@@ -8,7 +8,7 @@ const router = useRouter();
 const auth = useAuthStore();
 
 const user = computed(() => auth.state.user);
-const isLoginPage = computed(() => route.name === 'login');
+const hideShell = computed(() => Boolean(route.meta?.hideShell));
 
 const logout = async () => {
     try {
@@ -21,7 +21,7 @@ const logout = async () => {
 
 <template>
     <div class="app-shell">
-        <header v-if="!isLoginPage" class="topbar">
+        <header v-if="!hideShell" class="topbar">
             <div class="container topbar-inner">
                 <strong class="brand">Supportdesk</strong>
 
@@ -29,13 +29,14 @@ const logout = async () => {
                     <RouterLink :to="{ name: 'dashboard' }">Dashboard</RouterLink>
                     <RouterLink :to="{ name: 'tickets.index' }">Tickets</RouterLink>
                     <RouterLink :to="{ name: 'tickets.create' }">Novo Ticket</RouterLink>
+                    <RouterLink v-if="user.can_manage_users" :to="{ name: 'users.index' }">Utilizadores</RouterLink>
                     <button type="button" @click="logout">Terminar sessao</button>
                 </nav>
             </div>
         </header>
 
         <main class="container page-content">
-            <p v-if="user && !isLoginPage" class="user-line">
+            <p v-if="user && !hideShell" class="user-line">
                 Utilizador: <strong>{{ user.name }}</strong>
                 | Perfil: <strong>{{ user.role === 'operator' ? 'Operador' : 'Cliente' }}</strong>
             </p>

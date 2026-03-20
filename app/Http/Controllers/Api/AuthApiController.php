@@ -24,6 +24,7 @@ class AuthApiController extends Controller
                 'email' => $user->email,
                 'role' => $user->role,
                 'is_active' => $user->is_active,
+                'can_manage_users' => $user->canManageUsers(),
             ],
         ]);
     }
@@ -44,7 +45,7 @@ class AuthApiController extends Controller
             $request->boolean('remember')
         )) {
             throw ValidationException::withMessages([
-                'email' => 'Credenciais invalidas.',
+                'email' => 'Invalid credentials.',
             ]);
         }
 
@@ -54,7 +55,7 @@ class AuthApiController extends Controller
             Auth::logout();
 
             throw ValidationException::withMessages([
-                'email' => 'Conta inativa. Contacta um administrador.',
+                'email' => 'Inactive account. Contact an operator.',
             ]);
         }
 
@@ -65,6 +66,7 @@ class AuthApiController extends Controller
                 'email' => $request->user()->email,
                 'role' => $request->user()->role,
                 'is_active' => $request->user()->is_active,
+                'can_manage_users' => $request->user()->canManageUsers(),
             ],
         ]);
     }
