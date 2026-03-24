@@ -155,7 +155,7 @@ class TicketApiController extends Controller
             $initialStatus
         ) {
             $ticket = Ticket::query()->create([
-                'ticket_number' => 'TMP-'.Str::uuid(),
+                'ticket_number' => 'TMP-'.(string) Str::ulid(),
                 'inbox_id' => $validated['inbox_id'],
                 'entity_id' => $validated['entity_id'],
                 'contact_id' => $contact?->id,
@@ -325,6 +325,10 @@ class TicketApiController extends Controller
         $targetEntityId = (int) ($validated['entity_id'] ?? $ticket->entity_id);
 
         if (array_key_exists('inbox_id', $validated) && $targetInboxId !== (int) $ticket->inbox_id) {
+            if (! $user->isAdmin()) {
+                abort(403, 'Only admins can move tickets between inboxes.');
+            }
+
             if (! $user->hasInboxAccess($targetInboxId)) {
                 abort(403, 'You cannot move this ticket to an inbox you cannot access.');
             }
@@ -404,6 +408,10 @@ class TicketApiController extends Controller
         }
 
         if (array_key_exists('assigned_operator_id', $validated) || array_key_exists('inbox_id', $validated)) {
+            if (array_key_exists('assigned_operator_id', $validated) && ! $user->can('assign', $ticket)) {
+                abort(403, 'Only admins or inbox managers can assign operators.');
+            }
+
             $newOperator = $this->resolveAssignedOperator(
                 array_key_exists('assigned_operator_id', $validated) ? $validated['assigned_operator_id'] : $ticket->assigned_operator_id,
                 $targetInboxId
@@ -671,6 +679,10 @@ class TicketApiController extends Controller
         }
 
         if (array_key_exists('inbox_id', $validated) && (int) $validated['inbox_id'] !== $ticket->inbox_id) {
+            if (! $user->isAdmin()) {
+                abort(403, 'Only admins can move tickets between inboxes.');
+            }
+
             if (! $user->hasInboxAccess((int) $validated['inbox_id'])) {
                 abort(403, 'You cannot move this ticket to an inbox you cannot access.');
             }
@@ -749,6 +761,10 @@ class TicketApiController extends Controller
     private function applyVisibilityScope(Builder $query, User $user): void
     {
         if ($user->isOperator()) {
+            if ($user->isAdmin()) {
+                return;
+            }
+
             $inboxIds = $user->accessibleInboxes()->pluck('inboxes.id');
 
             if ($inboxIds->isEmpty()) {
@@ -816,6 +832,10 @@ class TicketApiController extends Controller
     private function inboxesForUser(User $user)
     {
         if ($user->isOperator()) {
+            if ($user->isAdmin()) {
+                return Inbox::query()->where('is_active', true)->orderBy('name')->get();
+            }
+
             return $user->accessibleInboxes()->where('is_active', true)->orderBy('name')->get();
         }
 
@@ -1048,14 +1068,3 @@ class TicketApiController extends Controller
         ];
     }
 }
-
-
-
-
-
-
-
-
-
-
-

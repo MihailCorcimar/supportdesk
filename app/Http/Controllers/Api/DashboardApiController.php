@@ -103,6 +103,10 @@ class DashboardApiController extends Controller
     private function applyVisibilityScope(Builder $query, User $user): void
     {
         if ($user->isOperator()) {
+            if ($user->isAdmin()) {
+                return;
+            }
+
             $inboxIds = $user->accessibleInboxes()->pluck('inboxes.id');
 
             if ($inboxIds->isEmpty()) {

@@ -10,6 +10,7 @@ const success = ref('');
 const users = ref([]);
 const manageableInboxes = ref([]);
 const entities = ref([]);
+const canSetAdmin = ref(false);
 const search = ref('');
 const roleFilter = ref('');
 
@@ -22,6 +23,7 @@ const createForm = reactive({
     inbox_ids: [],
     manager_inbox_ids: [],
     is_active: true,
+    is_admin: false,
 });
 
 const editingInboxesUserId = ref(null);
@@ -35,6 +37,7 @@ const fetchMeta = async () => {
     const response = await api.get('/users/meta');
     manageableInboxes.value = response.data.data.manageable_inboxes;
     entities.value = response.data.data.entities;
+    canSetAdmin.value = Boolean(response.data.data.can_set_admin);
 };
 
 const fetchUsers = async () => {
@@ -102,6 +105,7 @@ const resetCreateForm = () => {
     createForm.inbox_ids = [];
     createForm.manager_inbox_ids = [];
     createForm.is_active = true;
+    createForm.is_admin = false;
 };
 
 const createUser = async () => {
@@ -121,6 +125,7 @@ const createUser = async () => {
         if (createForm.role === 'operator') {
             payload.inbox_ids = createForm.inbox_ids;
             payload.manager_inbox_ids = createForm.manager_inbox_ids;
+            payload.is_admin = createForm.is_admin;
         } else {
             payload.entity_id = Number(createForm.entity_id);
             payload.contact_name = createForm.contact_name || createForm.name;
@@ -155,6 +160,21 @@ const toggleActive = async (user) => {
         await fetchUsers();
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Nao foi possivel atualizar o utilizador.';
+    }
+};
+const toggleAdmin = async (user) => {
+    error.value = '';
+    success.value = '';
+
+    try {
+        await api.patch(`/users/${user.id}`, {
+            is_admin: !user.is_admin,
+        });
+
+        success.value = 'Permissao de admin atualizada.';
+        await fetchUsers();
+    } catch (exception) {
+        error.value = exception?.response?.data?.message || 'Nao foi possivel atualizar permissao de admin.';
     }
 };
 
@@ -320,6 +340,11 @@ onMounted(load);
                             </label>
                         </div>
                     </div>
+
+                    <label v-if="canSetAdmin" class="checkbox-line full-row">
+                        <input v-model="createForm.is_admin" type="checkbox" />
+                        Operador admin (acesso global)
+                    </label>
                 </template>
 
                 <template v-else>
@@ -376,7 +401,7 @@ onMounted(load);
                     <tr v-for="user in users" :key="user.id">
                         <td>{{ user.name }}</td>
                         <td>{{ user.email }}</td>
-                        <td>{{ user.role === 'operator' ? 'Operador' : 'Cliente' }}</td>
+                        <td>{{ user.role === 'operator' ? (user.is_admin ? 'Operador admin' : 'Operador') : 'Cliente' }}</td>
                         <td>{{ user.is_active ? 'Ativo' : 'Inativo' }}</td>
                         <td>
                             <template v-if="user.role === 'operator'">
@@ -406,6 +431,14 @@ onMounted(load);
                                     @click="openInboxEditor(user)"
                                 >
                                     Gerir acessos
+                                </button>
+
+                                <button
+                                    v-if="user.role === 'operator' && canSetAdmin"
+                                    type="button"
+                                    @click="toggleAdmin(user)"
+                                >
+                                    {{ user.is_admin ? 'Remover admin' : 'Tornar admin' }}
                                 </button>
 
                                 <button type="button" class="danger" @click="deleteUser(user)">Eliminar</button>

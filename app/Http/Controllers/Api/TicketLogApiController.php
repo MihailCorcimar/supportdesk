@@ -90,6 +90,10 @@ class TicketLogApiController extends Controller
     {
         $query->whereHas('ticket', function (Builder $ticketQuery) use ($user): void {
             if ($user->isOperator()) {
+                if ($user->isAdmin()) {
+                    return;
+                }
+
                 $inboxIds = $user->accessibleInboxes()->pluck('inboxes.id');
 
                 if ($inboxIds->isEmpty()) {

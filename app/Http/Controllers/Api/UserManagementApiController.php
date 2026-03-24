@@ -26,10 +26,12 @@ class UserManagementApiController extends Controller
     {
         $actor = $request->user();
 
-        $manageableInboxes = $actor->manageableInboxes()
-            ->where('is_active', true)
-            ->orderBy('name')
-            ->get();
+        $manageableInboxes = $actor->isAdmin()
+            ? Inbox::query()->where('is_active', true)->orderBy('name')->get()
+            : $actor->manageableInboxes()
+                ->where('is_active', true)
+                ->orderBy('name')
+                ->get();
 
         $entities = Entity::query()
             ->where('is_active', true)
@@ -47,6 +49,7 @@ class UserManagementApiController extends Controller
                     'name' => $entity->name,
                 ])->values(),
                 'roles' => ['operator', 'client'],
+                'can_set_admin' => $actor->isAdmin(),
             ],
         ]);
     }
@@ -57,7 +60,9 @@ class UserManagementApiController extends Controller
     public function index(Request $request): JsonResponse
     {
         $actor = $request->user();
-        $manageableInboxIds = $actor->manageableInboxes()->pluck('inboxes.id')->all();
+        $manageableInboxIds = $actor->isAdmin()
+            ? Inbox::query()->pluck('id')->all()
+            : $actor->manageableInboxes()->pluck('inboxes.id')->all();
 
         $query = User::query()
             ->with(['accessibleInboxes:id,name', 'contacts.entity:id,name'])
@@ -121,12 +126,14 @@ class UserManagementApiController extends Controller
             'inbox_ids.*' => ['integer', Rule::exists('inboxes', 'id')],
             'manager_inbox_ids' => ['nullable', 'array'],
             'manager_inbox_ids.*' => ['integer'],
+            'is_admin' => ['sometimes', 'boolean'],
         ]);
 
         $inboxIds = collect($validated['inbox_ids'] ?? [])->map(fn (mixed $id) => (int) $id)->values();
         $managerInboxIds = collect($validated['manager_inbox_ids'] ?? [])->map(fn (mixed $id) => (int) $id)->values();
+        $isAdmin = $validated['role'] === 'operator' && (bool) ($validated['is_admin'] ?? false);
 
-        if ($validated['role'] === 'operator' && $inboxIds->isEmpty()) {
+        if ($validated['role'] === 'operator' && ! $isAdmin && $inboxIds->isEmpty()) {
             return response()->json([
                 'message' => 'At least one inbox is required for operators.',
             ], 422);
@@ -138,19 +145,24 @@ class UserManagementApiController extends Controller
             ], 422);
         }
 
-        if ($validated['role'] === 'operator') {
+        if ($isAdmin && ! $actor->isAdmin()) {
+            abort(403, 'Only admins can grant admin access.');
+        }
+
+        if ($validated['role'] === 'operator' && ! $isAdmin) {
             $this->assertInboxManagementScope($actor, $inboxIds->all(), $managerInboxIds->all());
         }
 
         $password = Str::password(24);
 
-        $user = DB::transaction(function () use ($validated, $password, $inboxIds, $managerInboxIds, $actor): User {
+        $user = DB::transaction(function () use ($validated, $password, $inboxIds, $managerInboxIds, $isAdmin, $actor): User {
             $user = User::query()->create([
                 'name' => $validated['name'],
                 'email' => mb_strtolower(trim((string) $validated['email'])),
                 'password' => Hash::make($password),
                 'role' => $validated['role'],
                 'is_active' => (bool) ($validated['is_active'] ?? true),
+                'is_admin' => $isAdmin,
             ]);
 
             if ($validated['role'] === 'operator') {
@@ -174,6 +186,7 @@ class UserManagementApiController extends Controller
                     'is_active' => $user->is_active,
                     'inbox_ids' => $inboxIds->all(),
                     'manager_inbox_ids' => $managerInboxIds->all(),
+                    'is_admin' => $isAdmin,
                 ]
             );
 
@@ -203,6 +216,7 @@ class UserManagementApiController extends Controller
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'is_active' => ['sometimes', 'boolean'],
             'contact_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'is_admin' => ['sometimes', 'boolean'],
         ]);
 
         if ($validated === []) {
@@ -221,6 +235,23 @@ class UserManagementApiController extends Controller
         if (array_key_exists('is_active', $validated) && (bool) $validated['is_active'] !== (bool) $user->is_active) {
             $changes['is_active'] = ['old' => (bool) $user->is_active, 'new' => (bool) $validated['is_active']];
             $user->is_active = (bool) $validated['is_active'];
+        }
+
+        if (array_key_exists('is_admin', $validated)) {
+            if (! $user->isOperator()) {
+                abort(422, 'Admin permission is only available for operators.');
+            }
+
+            $requestedSpecial = (bool) $validated['is_admin'];
+
+            if ($requestedSpecial && ! $actor->isAdmin()) {
+                abort(403, 'Only admins can grant admin access.');
+            }
+
+            if ($requestedSpecial !== $user->isAdmin()) {
+                $changes['is_admin'] = ['old' => (bool) $user->is_admin, 'new' => $requestedSpecial];
+                $user->is_admin = $requestedSpecial;
+            }
         }
 
         if ($user->isClient() && array_key_exists('contact_name', $validated)) {
@@ -261,7 +292,7 @@ class UserManagementApiController extends Controller
         $this->assertCanManageTargetUser($actor, $user);
 
         $validated = $request->validate([
-            'inbox_ids' => ['required', 'array', 'min:1'],
+            'inbox_ids' => ['required', 'array'],
             'inbox_ids.*' => ['integer', Rule::exists('inboxes', 'id')],
             'manager_inbox_ids' => ['nullable', 'array'],
             'manager_inbox_ids.*' => ['integer'],
@@ -271,6 +302,10 @@ class UserManagementApiController extends Controller
         $managerInboxIds = collect($validated['manager_inbox_ids'] ?? [])->map(fn (mixed $id) => (int) $id)->values();
 
         $this->assertInboxManagementScope($actor, $inboxIds->all(), $managerInboxIds->all());
+
+        if (! $user->isAdmin() && $inboxIds->isEmpty()) {
+            abort(422, 'At least one inbox is required for operators.');
+        }
 
         $oldInboxes = $user->accessibleInboxes()->pluck('inboxes.id')->all();
 
@@ -352,6 +387,7 @@ class UserManagementApiController extends Controller
             'email' => $user->email,
             'role' => $user->role,
             'is_active' => (bool) $user->is_active,
+            'is_admin' => (bool) $user->is_admin,
             'can_manage_users' => $user->canManageUsers(),
             'inboxes' => $user->accessibleInboxes->map(fn (Inbox $inbox) => [
                 'id' => $inbox->id,
@@ -377,6 +413,10 @@ class UserManagementApiController extends Controller
      */
     private function assertInboxManagementScope(User $actor, array $inboxIds, array $managerInboxIds): void
     {
+        if ($actor->isAdmin()) {
+            return;
+        }
+
         $allowedIds = $actor->manageableInboxes()->pluck('inboxes.id')->all();
 
         foreach (array_unique([...$inboxIds, ...$managerInboxIds]) as $inboxId) {
@@ -486,6 +526,14 @@ class UserManagementApiController extends Controller
     private function assertCanManageTargetUser(User $actor, User $target): void
     {
         if (! $target->isOperator()) {
+            return;
+        }
+
+        if ($target->isAdmin() && ! $actor->isAdmin()) {
+            abort(403, 'You cannot manage an admin operator.');
+        }
+
+        if ($actor->isAdmin()) {
             return;
         }
 

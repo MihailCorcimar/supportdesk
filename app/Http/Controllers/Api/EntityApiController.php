@@ -59,7 +59,6 @@ class EntityApiController extends Controller
         $validated = $request->validate([
             'type' => ['required', Rule::in(['internal', 'external'])],
             'name' => ['required', 'string', 'max:255'],
-            'slug' => ['nullable', 'string', 'max:255', Rule::unique('entities', 'slug')],
             'tax_number' => ['nullable', 'string', 'max:50'],
             'email' => ['nullable', 'email', 'max:255'],
             'phone' => ['nullable', 'string', 'max:50'],
@@ -72,10 +71,12 @@ class EntityApiController extends Controller
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
+        $name = trim((string) $validated['name']);
+
         $entity = Entity::query()->create([
             'type' => $validated['type'],
-            'name' => trim((string) $validated['name']),
-            'slug' => $this->resolveSlug((string) ($validated['slug'] ?? ''), (string) $validated['name']),
+            'name' => $name,
+            'slug' => $this->resolveSlug($name),
             'tax_number' => $validated['tax_number'] ?? null,
             'email' => $validated['email'] ?? null,
             'phone' => $validated['phone'] ?? null,
@@ -104,7 +105,6 @@ class EntityApiController extends Controller
         $validated = $request->validate([
             'type' => ['sometimes', Rule::in(['internal', 'external'])],
             'name' => ['sometimes', 'required', 'string', 'max:255'],
-            'slug' => ['sometimes', 'nullable', 'string', 'max:255', Rule::unique('entities', 'slug')->ignore($entity->id)],
             'tax_number' => ['sometimes', 'nullable', 'string', 'max:50'],
             'email' => ['sometimes', 'nullable', 'email', 'max:255'],
             'phone' => ['sometimes', 'nullable', 'string', 'max:50'],
@@ -127,10 +127,7 @@ class EntityApiController extends Controller
 
         if (array_key_exists('name', $validated)) {
             $entity->name = trim((string) $validated['name']);
-        }
-
-        if (array_key_exists('slug', $validated)) {
-            $entity->slug = $this->resolveSlug((string) ($validated['slug'] ?? ''), $entity->name, $entity->id);
+            $entity->slug = $this->resolveSlug($entity->name, $entity->id);
         }
 
         foreach (['tax_number', 'email', 'phone', 'website', 'address_line', 'postal_code', 'city', 'notes'] as $field) {
@@ -210,9 +207,9 @@ class EntityApiController extends Controller
     /**
      * Resolve unique slug value.
      */
-    private function resolveSlug(string $slugInput, string $name, ?int $ignoreId = null): string
+    private function resolveSlug(string $name, ?int $ignoreId = null): string
     {
-        $base = Str::slug($slugInput !== '' ? $slugInput : $name);
+        $base = Str::slug($name);
         $base = $base !== '' ? $base : 'entity';
 
         $slug = $base;

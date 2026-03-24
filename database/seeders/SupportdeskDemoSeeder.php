@@ -38,11 +38,12 @@ class SupportdeskDemoSeeder extends Seeder
                 'password' => Hash::make('Supportdesk123!'),
                 'role' => 'operator',
                 'is_active' => true,
+                'is_admin' => true,
             ]
         );
 
-        if (! $operator->isOperator()) {
-            $operator->update(['role' => 'operator', 'is_active' => true]);
+        if (! $operator->isOperator() || ! $operator->isAdmin()) {
+            $operator->update(['role' => 'operator', 'is_active' => true, 'is_admin' => true]);
         }
 
         $client = User::query()->firstOrCreate(
@@ -55,8 +56,8 @@ class SupportdeskDemoSeeder extends Seeder
             ]
         );
 
-        if (! $client->isClient()) {
-            $client->update(['role' => 'client', 'is_active' => true]);
+        if (! $client->isClient() || (bool) $client->is_admin) {
+            $client->update(['role' => 'client', 'is_active' => true, 'is_admin' => false]);
         }
 
         $operator->accessibleInboxes()->syncWithoutDetaching(

@@ -17,6 +17,10 @@ class TicketPolicy
         }
 
         if ($user->isOperator()) {
+            if ($user->isAdmin()) {
+                return true;
+            }
+
             return $user->accessibleInboxes()->exists();
         }
 
@@ -71,7 +75,8 @@ class TicketPolicy
      */
     public function assign(User $user, Ticket $ticket): bool
     {
-        return $this->update($user, $ticket);
+        return $this->update($user, $ticket)
+            && $user->hasInboxManagementAccess($ticket->inbox_id);
     }
 
     /**

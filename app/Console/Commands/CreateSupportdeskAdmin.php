@@ -50,6 +50,7 @@ class CreateSupportdeskAdmin extends Command
             'password' => Hash::make($password),
             'role' => 'operator',
             'is_active' => true,
+            'is_admin' => true,
         ]);
 
         $inboxes = Inbox::query()->pluck('id');

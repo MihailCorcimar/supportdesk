@@ -24,6 +24,7 @@ class AuthApiController extends Controller
                 'email' => $user->email,
                 'role' => $user->role,
                 'is_active' => $user->is_active,
+                'is_admin' => (bool) $user->is_admin,
                 'can_manage_users' => $user->canManageUsers(),
             ],
         ]);
@@ -66,6 +67,7 @@ class AuthApiController extends Controller
                 'email' => $request->user()->email,
                 'role' => $request->user()->role,
                 'is_active' => $request->user()->is_active,
+                'is_admin' => (bool) $request->user()->is_admin,
                 'can_manage_users' => $request->user()->canManageUsers(),
             ],
         ]);

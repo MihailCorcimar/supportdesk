@@ -1,11 +1,17 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import api from '../api/client';
+
+const route = useRoute();
+const router = useRouter();
 
 const loading = ref(true);
 const error = ref('');
 const success = ref('');
-const activeTab = ref('inboxes');
+const allowedTabs = ['inboxes', 'entities', 'contacts', 'logs'];
+const normalizeTab = (tab) => (allowedTabs.includes(tab) ? tab : 'inboxes');
+const activeTab = ref(normalizeTab(typeof route.query.tab === 'string' ? route.query.tab : 'inboxes'));
 
 const inboxes = ref([]);
 const entities = ref([]);
@@ -13,8 +19,8 @@ const contacts = ref([]);
 const users = ref([]);
 const logs = ref([]);
 
-const inboxForm = reactive({ name: '', slug: '', description: '', is_active: true });
-const entityForm = reactive({ type: 'external', name: '', slug: '', email: '', phone: '', country: 'PT', is_active: true });
+const inboxForm = reactive({ name: '', is_active: true });
+const entityForm = reactive({ type: 'external', name: '', email: '', phone: '', country: 'PT', is_active: true });
 const contactForm = reactive({ entity_id: '', user_id: '', name: '', email: '', phone: '', job_title: '', is_primary: false, is_active: true });
 const logFilters = reactive({ search: '', action: '', actor_type: '' });
 
@@ -81,8 +87,6 @@ const createInbox = async () => {
         await api.post('/inboxes', inboxForm);
         success.value = 'Inbox criada com sucesso.';
         inboxForm.name = '';
-        inboxForm.slug = '';
-        inboxForm.description = '';
         inboxForm.is_active = true;
         await loadBaseData();
     } catch (exception) {
@@ -96,8 +100,6 @@ const saveInbox = async (inbox) => {
     try {
         await api.patch(`/inboxes/${inbox.id}`, {
             name: inbox.name,
-            slug: inbox.slug,
-            description: inbox.description,
             is_active: inbox.is_active,
         });
         success.value = 'Inbox atualizada.';
@@ -130,7 +132,6 @@ const createEntity = async () => {
         success.value = 'Entidade criada com sucesso.';
         entityForm.type = 'external';
         entityForm.name = '';
-        entityForm.slug = '';
         entityForm.email = '';
         entityForm.phone = '';
         entityForm.country = 'PT';
@@ -148,7 +149,6 @@ const saveEntity = async (entity) => {
         await api.patch(`/entities/${entity.id}`, {
             type: entity.type,
             name: entity.name,
-            slug: entity.slug,
             email: entity.email,
             phone: entity.phone,
             country: entity.country,
@@ -252,6 +252,30 @@ const formatDate = (value) => {
     return new Date(value).toLocaleString('pt-PT');
 };
 
+watch(
+    () => route.query.tab,
+    (tabFromQuery) => {
+        const normalized = normalizeTab(typeof tabFromQuery === 'string' ? tabFromQuery : 'inboxes');
+        if (normalized !== activeTab.value) {
+            activeTab.value = normalized;
+        }
+    }
+);
+
+watch(activeTab, (tab) => {
+    const normalized = normalizeTab(tab);
+    const current = normalizeTab(typeof route.query.tab === 'string' ? route.query.tab : 'inboxes');
+
+    if (normalized !== current) {
+        router.replace({
+            query: {
+                ...route.query,
+                tab: normalized,
+            },
+        });
+    }
+});
+
 onMounted(loadAll);
 </script>
 
@@ -287,8 +311,6 @@ onMounted(loadAll);
                 <h2>Inboxes</h2>
                 <form class="form-grid" @submit.prevent="createInbox">
                     <label>Nome <input v-model="inboxForm.name" required /></label>
-                    <label>Slug <input v-model="inboxForm.slug" /></label>
-                    <label class="full">Descricao <input v-model="inboxForm.description" /></label>
                     <label class="checkbox"><input v-model="inboxForm.is_active" type="checkbox" />Ativa</label>
                     <button type="submit">Criar inbox</button>
                 </form>
@@ -297,7 +319,6 @@ onMounted(loadAll);
                     <thead>
                         <tr>
                             <th>Nome</th>
-                            <th>Slug</th>
                             <th>Ativa</th>
                             <th>Tickets</th>
                             <th>Operadores</th>
@@ -307,7 +328,6 @@ onMounted(loadAll);
                     <tbody>
                         <tr v-for="item in inboxes" :key="item.id">
                             <td><input v-model="item.name" :disabled="editingInboxId !== item.id" /></td>
-                            <td><input v-model="item.slug" :disabled="editingInboxId !== item.id" /></td>
                             <td><input v-model="item.is_active" type="checkbox" :disabled="editingInboxId !== item.id" /></td>
                             <td>{{ item.tickets_count }}</td>
                             <td>{{ item.operators_count }}</td>
@@ -332,7 +352,6 @@ onMounted(loadAll);
                         </select>
                     </label>
                     <label>Nome <input v-model="entityForm.name" required /></label>
-                    <label>Slug <input v-model="entityForm.slug" /></label>
                     <label>Email <input v-model="entityForm.email" type="email" /></label>
                     <label>Telefone <input v-model="entityForm.phone" /></label>
                     <label>Pais (2 letras) <input v-model="entityForm.country" maxlength="2" /></label>
@@ -495,6 +514,7 @@ h1, h2 { margin: 0; }
 .tab {
     border: 1px solid #dbe4ee;
     background: #fff;
+    color: #0f172a;
     border-radius: 8px;
     padding: 0.45rem 0.7rem;
     cursor: pointer;

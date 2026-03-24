@@ -7,7 +7,6 @@ use App\Models\Inbox;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
-use Illuminate\Validation\Rule;
 
 class InboxApiController extends Controller
 {
@@ -52,15 +51,14 @@ class InboxApiController extends Controller
     {
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:120'],
-            'slug' => ['nullable', 'string', 'max:120', Rule::unique('inboxes', 'slug')],
-            'description' => ['nullable', 'string'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
+        $name = trim((string) $validated['name']);
+
         $inbox = Inbox::query()->create([
-            'name' => trim((string) $validated['name']),
-            'slug' => $this->resolveSlug((string) ($validated['slug'] ?? ''), (string) $validated['name']),
-            'description' => $validated['description'] ?? null,
+            'name' => $name,
+            'slug' => $this->resolveSlug($name),
             'is_active' => (bool) ($validated['is_active'] ?? true),
         ]);
 
@@ -79,8 +77,6 @@ class InboxApiController extends Controller
     {
         $validated = $request->validate([
             'name' => ['sometimes', 'required', 'string', 'max:120'],
-            'slug' => ['sometimes', 'nullable', 'string', 'max:120', Rule::unique('inboxes', 'slug')->ignore($inbox->id)],
-            'description' => ['sometimes', 'nullable', 'string'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
@@ -90,14 +86,7 @@ class InboxApiController extends Controller
 
         if (array_key_exists('name', $validated)) {
             $inbox->name = trim((string) $validated['name']);
-        }
-
-        if (array_key_exists('slug', $validated)) {
-            $inbox->slug = $this->resolveSlug((string) ($validated['slug'] ?? ''), $inbox->name, $inbox->id);
-        }
-
-        if (array_key_exists('description', $validated)) {
-            $inbox->description = $validated['description'];
+            $inbox->slug = $this->resolveSlug($inbox->name, $inbox->id);
         }
 
         if (array_key_exists('is_active', $validated)) {
@@ -143,7 +132,6 @@ class InboxApiController extends Controller
             'id' => $inbox->id,
             'name' => $inbox->name,
             'slug' => $inbox->slug,
-            'description' => $inbox->description,
             'is_active' => (bool) $inbox->is_active,
             'tickets_count' => (int) ($inbox->tickets_count ?? 0),
             'operators_count' => (int) ($inbox->operators_count ?? 0),
@@ -153,9 +141,9 @@ class InboxApiController extends Controller
     /**
      * Resolve unique slug value.
      */
-    private function resolveSlug(string $slugInput, string $name, ?int $ignoreId = null): string
+    private function resolveSlug(string $name, ?int $ignoreId = null): string
     {
-        $base = Str::slug($slugInput !== '' ? $slugInput : $name);
+        $base = Str::slug($name);
         $base = $base !== '' ? $base : 'inbox';
 
         $slug = $base;

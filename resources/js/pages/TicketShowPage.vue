@@ -44,7 +44,7 @@ const priorityLabels = {
 };
 
 const typeLabels = {
-    question: 'Quest„o',
+    question: 'Quest√£o',
     incident: 'Incidente',
     request: 'Pedido',
     task: 'Tarefa',
@@ -55,7 +55,7 @@ const actionLabels = {
     ticket_created: 'Ticket criado',
     message_added: 'Mensagem adicionada',
     status_updated: 'Estado alterado',
-    assignment_updated: 'AtribuiÁ„o alterada',
+    assignment_updated: 'Atribui√ß√£o alterada',
     field_updated: 'Campo alterado',
     attachments_added: 'Anexos adicionados',
 };
@@ -264,7 +264,7 @@ onMounted(loadTicket);
         </article>
 
         <article class="card" v-if="isOperator">
-            <h2>Gest„o operacional</h2>
+            <h2>Gest√£o operacional</h2>
             <div class="actions-grid">
                 <form @submit.prevent="updateStatus" class="inline-form" v-if="canUpdateStatus">
                     <label>
@@ -282,14 +282,14 @@ onMounted(loadTicket);
                     <label>
                         Operador
                         <select v-model="assignmentForm.assigned_operator_id">
-                            <option value="">Sem atribuiÁ„o</option>
+                            <option value="">Sem atribui√ß√£o</option>
                             <option v-for="operator in ticket.operators" :key="operator.id" :value="String(operator.id)">
                                 {{ operator.name }}
                             </option>
                         </select>
                     </label>
                     <button class="btn-primary" type="submit" :disabled="savingAssignment">
-                        {{ savingAssignment ? 'A guardar...' : 'Atualizar atribuiÁ„o' }}
+                        {{ savingAssignment ? 'A guardar...' : 'Atualizar atribui√ß√£o' }}
                     </button>
                 </form>
             </div>
@@ -324,7 +324,7 @@ onMounted(loadTicket);
                 </label>
 
                 <label class="full">
-                    Conhecimento (emails separados por vÌrgula)
+                    Conhecimento (emails separados por v√≠rgula)
                     <input v-model="metadataForm.cc_emails" placeholder="exemplo@dominio.pt, outro@dominio.pt">
                 </label>
 
@@ -398,7 +398,7 @@ onMounted(loadTicket);
 
             <div class="right-column">
                 <article class="card">
-                    <h2>HistÛrico</h2>
+                    <h2>Hist√≥rico</h2>
                     <div class="stack">
                         <article class="timeline-item" v-for="log in ticket.logs" :key="log.id">
                             <div class="timeline-head">

@@ -26,6 +26,7 @@ class User extends Authenticatable
         'password',
         'role',
         'is_active',
+        'is_admin',
     ];
 
     /**
@@ -49,6 +50,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'is_active' => 'boolean',
+            'is_admin' => 'boolean',
         ];
     }
 
@@ -58,6 +60,14 @@ class User extends Authenticatable
     public function isOperator(): bool
     {
         return $this->role === 'operator';
+    }
+
+    /**
+     * Determine if the user is an admin operator.
+     */
+    public function isAdmin(): bool
+    {
+        return $this->isOperator() && (bool) $this->is_admin;
     }
 
     /**
@@ -106,6 +116,10 @@ class User extends Authenticatable
             return false;
         }
 
+        if ($this->isAdmin()) {
+            return true;
+        }
+
         return $this->accessibleInboxes()->whereKey($inboxId)->exists();
     }
 
@@ -122,7 +136,8 @@ class User extends Authenticatable
      */
     public function canManageUsers(): bool
     {
-        return $this->isOperator() && $this->manageableInboxes()->exists();
+        return $this->isAdmin()
+            || ($this->isOperator() && $this->manageableInboxes()->exists());
     }
 
     /**
@@ -130,6 +145,10 @@ class User extends Authenticatable
      */
     public function hasInboxManagementAccess(int $inboxId): bool
     {
+        if ($this->isAdmin()) {
+            return true;
+        }
+
         return $this->isOperator()
             && $this->manageableInboxes()->where('inboxes.id', $inboxId)->exists();
     }
