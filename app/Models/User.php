@@ -4,6 +4,7 @@ namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Database\Factories\UserFactory;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -89,11 +90,10 @@ class User extends Authenticatable
     /**
      * Get entities linked to this user through contacts.
      */
-    public function entities(): BelongsToMany
+    public function entities(): Builder
     {
-        return $this->belongsToMany(Entity::class, 'contacts', 'user_id', 'entity_id')
-            ->withTimestamps()
-            ->withPivot(['id', 'name', 'email', 'is_primary', 'is_active'])
+        return Entity::query()
+            ->whereHas('contacts', fn (Builder $query) => $query->where('contacts.user_id', $this->id))
             ->distinct();
     }
 

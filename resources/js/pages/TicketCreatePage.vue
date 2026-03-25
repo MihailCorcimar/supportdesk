@@ -52,7 +52,7 @@ const isOperator = computed(() => auth.state.user?.role === 'operator');
 const availableContacts = computed(() => {
     if (!form.entity_id) return options.value.contacts;
     return options.value.contacts.filter(
-        (contact) => String(contact.entity_id) === String(form.entity_id),
+        (contact) => Array.isArray(contact.entity_ids) && contact.entity_ids.includes(Number(form.entity_id)),
     );
 });
 
@@ -112,17 +112,24 @@ const submit = async () => {
     }
 };
 
+const closeModal = async () => {
+    await router.push({ name: 'tickets.index' });
+};
+
 onMounted(loadMeta);
 </script>
 
 <template>
-    <section class="page">
-        <div class="header-row">
-            <h1>Novo Ticket</h1>
-            <RouterLink class="btn-secondary" :to="{ name: 'tickets.index' }">Voltar a lista</RouterLink>
-        </div>
+    <section class="modal-overlay">
+        <article class="modal-card">
+            <header class="modal-header">
+                <div>
+                    <h1>Novo ticket</h1>
+                    <p>Preenche os dados para criar e ligar o ticket.</p>
+                </div>
+                <button type="button" class="btn-icon" @click="closeModal">Fechar</button>
+            </header>
 
-        <article class="card">
             <p v-if="loading" class="muted">A carregar...</p>
             <p v-if="error" class="error">{{ error }}</p>
 
@@ -221,7 +228,7 @@ onMounted(loadMeta);
                     <button type="submit" class="btn-primary" :disabled="submitting">
                         {{ submitting ? 'A criar...' : 'Criar ticket' }}
                     </button>
-                    <RouterLink class="btn-secondary" :to="{ name: 'tickets.index' }">Cancelar</RouterLink>
+                    <button type="button" class="btn-secondary" @click="closeModal">Cancelar</button>
                 </div>
             </form>
         </article>
@@ -229,15 +236,43 @@ onMounted(loadMeta);
 </template>
 
 <style scoped>
-.page { display: grid; gap: 1rem; }
-.header-row { display: flex; justify-content: space-between; align-items: center; gap: 0.8rem; }
-h1 { margin: 0; }
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    background: rgba(17, 24, 39, 0.44);
+    backdrop-filter: blur(1px);
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+}
 
-.card {
+.modal-card {
+    width: min(1120px, calc(100vw - 2rem));
+    max-height: calc(100vh - 2rem);
+    overflow: auto;
     background: #fff;
     border: 1px solid #dbe4ee;
-    border-radius: 12px;
-    padding: 0.9rem;
+    border-radius: 14px;
+    padding: 1rem;
+    display: grid;
+    gap: 0.85rem;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.8rem;
+}
+
+h1 {
+    margin: 0;
+}
+
+.modal-header p {
+    margin: 0.25rem 0 0;
+    color: #475569;
 }
 
 .grid {
@@ -270,6 +305,7 @@ textarea { min-height: 130px; resize: vertical; }
     gap: 0.5rem;
 }
 
+.btn-icon,
 .btn-primary,
 .btn-secondary {
     border: 1px solid #dbe4ee;
@@ -289,6 +325,11 @@ textarea { min-height: 130px; resize: vertical; }
 .btn-secondary {
     background: #fff;
     color: #0f172a;
+}
+
+.btn-icon {
+    background: #fff;
+    color: #334155;
 }
 
 .field-error {

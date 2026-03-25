@@ -16,12 +16,37 @@ const activeTab = ref(normalizeTab(typeof route.query.tab === 'string' ? route.q
 const inboxes = ref([]);
 const entities = ref([]);
 const contacts = ref([]);
+const contactFunctions = ref([]);
 const users = ref([]);
 const logs = ref([]);
 
 const inboxForm = reactive({ name: '', is_active: true });
-const entityForm = reactive({ type: 'external', name: '', email: '', phone: '', country: 'PT', is_active: true });
-const contactForm = reactive({ entity_id: '', user_id: '', name: '', email: '', phone: '', job_title: '', is_primary: false, is_active: true });
+const entityForm = reactive({
+    type: 'external',
+    name: '',
+    tax_number: '',
+    email: '',
+    phone: '',
+    mobile_phone: '',
+    website: '',
+    address_line: '',
+    postal_code: '',
+    city: '',
+    country: 'PT',
+    notes: '',
+    is_active: true,
+});
+const contactForm = reactive({
+    entity_ids: [],
+    function_id: '',
+    user_id: '',
+    name: '',
+    email: '',
+    phone: '',
+    mobile_phone: '',
+    internal_notes: '',
+    is_active: true,
+});
 const logFilters = reactive({ search: '', action: '', actor_type: '' });
 
 const editingInboxId = ref(null);
@@ -47,6 +72,7 @@ const loadBaseData = async () => {
     inboxes.value = inboxesResponse.data.data;
     entities.value = entitiesResponse.data.data;
     contacts.value = contactsResponse.data.data;
+    contactFunctions.value = contactsResponse.data.options?.functions ?? [];
     users.value = usersResponse.data.data;
 };
 
@@ -78,6 +104,20 @@ const loadAll = async () => {
 const resetMessages = () => {
     error.value = '';
     success.value = '';
+};
+
+const toggleContactEntity = (target, entityId) => {
+    const normalizedId = Number(entityId);
+    if (!Array.isArray(target.entity_ids)) {
+        target.entity_ids = [];
+    }
+
+    if (target.entity_ids.includes(normalizedId)) {
+        target.entity_ids = target.entity_ids.filter((id) => id !== normalizedId);
+        return;
+    }
+
+    target.entity_ids = [...target.entity_ids, normalizedId];
 };
 
 const createInbox = async () => {
@@ -132,9 +172,16 @@ const createEntity = async () => {
         success.value = 'Entidade criada com sucesso.';
         entityForm.type = 'external';
         entityForm.name = '';
+        entityForm.tax_number = '';
         entityForm.email = '';
         entityForm.phone = '';
+        entityForm.mobile_phone = '';
+        entityForm.website = '';
+        entityForm.address_line = '';
+        entityForm.postal_code = '';
+        entityForm.city = '';
         entityForm.country = 'PT';
+        entityForm.notes = '';
         entityForm.is_active = true;
         await loadBaseData();
     } catch (exception) {
@@ -149,9 +196,16 @@ const saveEntity = async (entity) => {
         await api.patch(`/entities/${entity.id}`, {
             type: entity.type,
             name: entity.name,
+            tax_number: entity.tax_number,
             email: entity.email,
             phone: entity.phone,
+            mobile_phone: entity.mobile_phone,
+            website: entity.website,
+            address_line: entity.address_line,
+            postal_code: entity.postal_code,
+            city: entity.city,
             country: entity.country,
+            notes: entity.notes,
             is_active: entity.is_active,
         });
         success.value = 'Entidade atualizada.';
@@ -181,18 +235,25 @@ const createContact = async () => {
 
     try {
         await api.post('/contacts', {
-            ...contactForm,
-            entity_id: Number(contactForm.entity_id),
+            entity_ids: contactForm.entity_ids.map((id) => Number(id)),
+            function_id: contactForm.function_id ? Number(contactForm.function_id) : null,
             user_id: contactForm.user_id ? Number(contactForm.user_id) : null,
+            name: contactForm.name,
+            email: contactForm.email,
+            phone: contactForm.phone || null,
+            mobile_phone: contactForm.mobile_phone || null,
+            internal_notes: contactForm.internal_notes || null,
+            is_active: contactForm.is_active,
         });
         success.value = 'Contacto criado com sucesso.';
-        contactForm.entity_id = '';
+        contactForm.entity_ids = [];
+        contactForm.function_id = '';
         contactForm.user_id = '';
         contactForm.name = '';
         contactForm.email = '';
         contactForm.phone = '';
-        contactForm.job_title = '';
-        contactForm.is_primary = false;
+        contactForm.mobile_phone = '';
+        contactForm.internal_notes = '';
         contactForm.is_active = true;
         await loadBaseData();
     } catch (exception) {
@@ -205,13 +266,14 @@ const saveContact = async (contact) => {
 
     try {
         await api.patch(`/contacts/${contact.id}`, {
-            entity_id: Number(contact.entity_id),
+            entity_ids: (contact.entity_ids || []).map((id) => Number(id)),
+            function_id: contact.function_id ? Number(contact.function_id) : null,
             user_id: contact.user_id ? Number(contact.user_id) : null,
             name: contact.name,
             email: contact.email,
             phone: contact.phone,
-            job_title: contact.job_title,
-            is_primary: contact.is_primary,
+            mobile_phone: contact.mobile_phone,
+            internal_notes: contact.internal_notes,
             is_active: contact.is_active,
         });
         success.value = 'Contacto atualizado.';
@@ -312,7 +374,7 @@ onMounted(loadAll);
                 <form class="form-grid" @submit.prevent="createInbox">
                     <label>Nome <input v-model="inboxForm.name" required /></label>
                     <label class="checkbox"><input v-model="inboxForm.is_active" type="checkbox" />Ativa</label>
-                    <button type="submit">Criar inbox</button>
+                    <button type="submit" class="btn-inline">Criar inbox</button>
                 </form>
 
                 <table class="table">
@@ -352,11 +414,18 @@ onMounted(loadAll);
                         </select>
                     </label>
                     <label>Nome <input v-model="entityForm.name" required /></label>
+                    <label>NIF <input v-model="entityForm.tax_number" /></label>
                     <label>Email <input v-model="entityForm.email" type="email" /></label>
                     <label>Telefone <input v-model="entityForm.phone" /></label>
+                    <label>Telemovel <input v-model="entityForm.mobile_phone" /></label>
+                    <label>Website <input v-model="entityForm.website" type="url" placeholder="https://..." /></label>
+                    <label>Morada <input v-model="entityForm.address_line" /></label>
+                    <label>Codigo postal <input v-model="entityForm.postal_code" maxlength="20" /></label>
+                    <label>Cidade <input v-model="entityForm.city" /></label>
                     <label>Pais (2 letras) <input v-model="entityForm.country" maxlength="2" /></label>
                     <label class="checkbox"><input v-model="entityForm.is_active" type="checkbox" />Ativa</label>
-                    <button type="submit">Criar entidade</button>
+                    <label class="full">Notas internas <textarea v-model="entityForm.notes" rows="2"></textarea></label>
+                    <button type="submit" class="full">Criar entidade</button>
                 </form>
 
                 <table class="table">
@@ -365,6 +434,11 @@ onMounted(loadAll);
                             <th>Nome</th>
                             <th>Tipo</th>
                             <th>Email</th>
+                            <th>Telefone</th>
+                            <th>Telemovel</th>
+                            <th>NIF</th>
+                            <th>Website</th>
+                            <th>Notas internas</th>
                             <th>Ativa</th>
                             <th>Contactos</th>
                             <th>Tickets</th>
@@ -381,6 +455,11 @@ onMounted(loadAll);
                                 </select>
                             </td>
                             <td><input v-model="item.email" :disabled="editingEntityId !== item.id" /></td>
+                            <td><input v-model="item.phone" :disabled="editingEntityId !== item.id" /></td>
+                            <td><input v-model="item.mobile_phone" :disabled="editingEntityId !== item.id" /></td>
+                            <td><input v-model="item.tax_number" :disabled="editingEntityId !== item.id" /></td>
+                            <td><input v-model="item.website" :disabled="editingEntityId !== item.id" /></td>
+                            <td><input v-model="item.notes" :disabled="editingEntityId !== item.id" /></td>
                             <td><input v-model="item.is_active" type="checkbox" :disabled="editingEntityId !== item.id" /></td>
                             <td>{{ item.contacts_count }}</td>
                             <td>{{ item.tickets_count }}</td>
@@ -398,11 +477,17 @@ onMounted(loadAll);
             <template v-if="!loading && activeTab === 'contacts'">
                 <h2>Contactos</h2>
                 <form class="form-grid" @submit.prevent="createContact">
-                    <label>Entidade
-                        <select v-model="contactForm.entity_id" required>
-                            <option value="">Selecionar</option>
-                            <option v-for="entity in entities" :key="entity.id" :value="String(entity.id)">{{ entity.name }}</option>
-                        </select>
+                    <label class="full">Entidades relacionadas
+                        <div class="checks">
+                            <label v-for="entity in entities" :key="`new-contact-entity-${entity.id}`" class="checkbox">
+                                <input
+                                    type="checkbox"
+                                    :checked="contactForm.entity_ids.includes(entity.id)"
+                                    @change="toggleContactEntity(contactForm, entity.id)"
+                                />
+                                {{ entity.name }}
+                            </label>
+                        </div>
                     </label>
                     <label>Utilizador (opcional)
                         <select v-model="contactForm.user_id">
@@ -412,21 +497,33 @@ onMounted(loadAll);
                             </option>
                         </select>
                     </label>
+                    <label>Funcao
+                        <select v-model="contactForm.function_id">
+                            <option value="">Sem funcao</option>
+                            <option v-for="option in contactFunctions" :key="option.id" :value="String(option.id)">
+                                {{ option.name }}
+                            </option>
+                        </select>
+                    </label>
                     <label>Nome <input v-model="contactForm.name" required /></label>
                     <label>Email <input v-model="contactForm.email" type="email" required /></label>
                     <label>Telefone <input v-model="contactForm.phone" /></label>
-                    <label>Cargo <input v-model="contactForm.job_title" /></label>
-                    <label class="checkbox"><input v-model="contactForm.is_primary" type="checkbox" />Principal</label>
+                    <label>Telemovel <input v-model="contactForm.mobile_phone" /></label>
+                    <label class="full">Notas internas <textarea v-model="contactForm.internal_notes" rows="2"></textarea></label>
                     <label class="checkbox"><input v-model="contactForm.is_active" type="checkbox" />Ativo</label>
-                    <button type="submit">Criar contacto</button>
+                    <button type="submit" class="btn-inline">Criar contacto</button>
                 </form>
 
                 <table class="table">
                     <thead>
                         <tr>
                             <th>Nome</th>
+                            <th>Funcao</th>
                             <th>Email</th>
-                            <th>Entidade</th>
+                            <th>Telefone</th>
+                            <th>Telemovel</th>
+                            <th>Entidades</th>
+                            <th>Notas internas</th>
                             <th>Ativo</th>
                             <th>Acoes</th>
                         </tr>
@@ -434,12 +531,33 @@ onMounted(loadAll);
                     <tbody>
                         <tr v-for="item in contacts" :key="item.id">
                             <td><input v-model="item.name" :disabled="editingContactId !== item.id" /></td>
-                            <td><input v-model="item.email" :disabled="editingContactId !== item.id" /></td>
                             <td>
-                                <select v-model="item.entity_id" :disabled="editingContactId !== item.id">
-                                    <option v-for="entity in entities" :key="entity.id" :value="entity.id">{{ entity.name }}</option>
+                                <select v-model="item.function_id" :disabled="editingContactId !== item.id">
+                                    <option :value="null">Sem funcao</option>
+                                    <option v-for="option in contactFunctions" :key="`contact-${item.id}-function-${option.id}`" :value="option.id">
+                                        {{ option.name }}
+                                    </option>
                                 </select>
                             </td>
+                            <td><input v-model="item.email" :disabled="editingContactId !== item.id" /></td>
+                            <td><input v-model="item.phone" :disabled="editingContactId !== item.id" /></td>
+                            <td><input v-model="item.mobile_phone" :disabled="editingContactId !== item.id" /></td>
+                            <td>
+                                <div v-if="editingContactId === item.id" class="checks compact">
+                                    <label v-for="entity in entities" :key="`contact-${item.id}-entity-${entity.id}`" class="checkbox">
+                                        <input
+                                            type="checkbox"
+                                            :checked="(item.entity_ids || []).includes(entity.id)"
+                                            @change="toggleContactEntity(item, entity.id)"
+                                        />
+                                        {{ entity.name }}
+                                    </label>
+                                </div>
+                                <span v-else>
+                                    {{ (item.entities || []).map((entity) => entity.name).join(', ') || '-' }}
+                                </span>
+                            </td>
+                            <td><input v-model="item.internal_notes" :disabled="editingContactId !== item.id" /></td>
                             <td><input v-model="item.is_active" type="checkbox" :disabled="editingContactId !== item.id" /></td>
                             <td class="row-actions">
                                 <button v-if="editingContactId !== item.id" type="button" @click="editingContactId = item.id">Editar</button>
@@ -538,7 +656,7 @@ h1, h2 { margin: 0; }
 }
 
 label { display: grid; gap: 0.25rem; color: #334155; }
-input, select, button {
+input, select, button, textarea {
     font: inherit;
     border: 1px solid #dbe4ee;
     border-radius: 8px;
@@ -562,6 +680,14 @@ button.danger {
 
 .checkbox { display: flex; align-items: center; gap: 0.4rem; }
 .checkbox input { width: auto; }
+.checks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.8rem;
+}
+.checks.compact {
+    gap: 0.35rem 0.65rem;
+}
 .full { grid-column: 1 / -1; }
 
 .table { width: 100%; border-collapse: collapse; }
@@ -591,6 +717,12 @@ th, td {
     border: 1px solid #dbe4ee;
     background: #fff;
     color: #0f172a;
+}
+.btn-inline {
+    width: auto;
+    justify-self: start;
+    align-self: end;
+    min-width: 140px;
 }
 
 @media (max-width: 960px) {

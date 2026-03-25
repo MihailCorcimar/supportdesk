@@ -79,14 +79,21 @@ class SupportdeskDemoSeeder extends Seeder
         );
 
         $contact = Contact::query()->firstOrCreate(
-            ['entity_id' => $entity->id, 'email' => 'cliente@supportdesk.local'],
+            ['email' => 'cliente@supportdesk.local'],
             [
                 'user_id' => $client->id,
                 'name' => 'Cliente Demo',
-                'is_primary' => true,
                 'is_active' => true,
             ]
         );
+
+        $contact->fill([
+            'user_id' => $client->id,
+            'name' => 'Cliente Demo',
+            'is_active' => true,
+        ]);
+        $contact->save();
+        $contact->entities()->syncWithoutDetaching([$entity->id]);
 
         if (! Ticket::query()->exists()) {
             $ticket = Ticket::query()->create([

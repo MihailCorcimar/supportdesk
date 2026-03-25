@@ -67,7 +67,8 @@ class TicketApiController extends Controller
         $entityIds = $entities->pluck('id');
 
         $contacts = Contact::query()
-            ->whereIn('entity_id', $entityIds)
+            ->with('entities:id,name')
+            ->whereHas('entities', fn (Builder $query) => $query->whereIn('entities.id', $entityIds))
             ->where('is_active', true)
             ->orderBy('name')
             ->get();
@@ -97,7 +98,7 @@ class TicketApiController extends Controller
                     'id' => $contact->id,
                     'name' => $contact->name,
                     'email' => $contact->email,
-                    'entity_id' => $contact->entity_id,
+                    'entity_ids' => $contact->entities->pluck('id')->values()->all(),
                 ])->values(),
                 'operators' => $operators->map(fn (User $operator) => [
                     'id' => $operator->id,
@@ -272,7 +273,8 @@ class TicketApiController extends Controller
         $availableInboxes = $this->inboxesForUser($request->user());
         $availableEntities = $this->entitiesForUser($request->user());
         $availableContacts = Contact::query()
-            ->whereIn('entity_id', $availableEntities->pluck('id'))
+            ->with('entities:id,name')
+            ->whereHas('entities', fn (Builder $query) => $query->whereIn('entities.id', $availableEntities->pluck('id')))
             ->where('is_active', true)
             ->orderBy('name')
             ->get();
@@ -396,7 +398,7 @@ class TicketApiController extends Controller
             } else {
                 $contact = Contact::query()
                     ->whereKey((int) $newContactId)
-                    ->where('entity_id', $targetEntityId)
+                    ->whereHas('entities', fn (Builder $query) => $query->whereKey($targetEntityId))
                     ->where('is_active', true)
                     ->firstOrFail();
 
@@ -862,7 +864,7 @@ class TicketApiController extends Controller
         if ($contactId) {
             $contact = Contact::query()
                 ->whereKey($contactId)
-                ->where('entity_id', $entityId)
+                ->whereHas('entities', fn (Builder $query) => $query->whereKey($entityId))
                 ->where('is_active', true)
                 ->firstOrFail();
 
@@ -878,7 +880,7 @@ class TicketApiController extends Controller
         }
 
         return Contact::query()
-            ->where('entity_id', $entityId)
+            ->whereHas('entities', fn (Builder $query) => $query->whereKey($entityId))
             ->where('user_id', $user->id)
             ->where('is_active', true)
             ->firstOrFail();
@@ -1063,7 +1065,7 @@ class TicketApiController extends Controller
                 'id' => $contact->id,
                 'name' => $contact->name,
                 'email' => $contact->email,
-                'entity_id' => $contact->entity_id,
+                'entity_ids' => $contact->entities->pluck('id')->values()->all(),
             ])->values()->all(),
         ];
     }

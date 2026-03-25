@@ -1,10 +1,13 @@
-<script setup>
+﻿<script setup>
 import { onMounted, reactive, ref } from 'vue';
-import { RouterLink } from 'vue-router';
+import { RouterLink, useRouter } from 'vue-router';
 import api from '../api/client';
 
+const router = useRouter();
 const loading = ref(false);
 const error = ref('');
+const quickActionMessage = ref('');
+const searchInputRef = ref(null);
 const tickets = ref([]);
 const meta = ref({ current_page: 1, last_page: 1, total: 0 });
 const options = ref({
@@ -37,6 +40,14 @@ const priorityLabels = {
     medium: 'Media',
     high: 'Alta',
     urgent: 'Urgente',
+};
+
+const typeLabels = {
+    question: 'Questao',
+    incident: 'Incidente',
+    request: 'Pedido',
+    task: 'Tarefa',
+    other: 'Outro',
 };
 
 const loadMeta = async () => {
@@ -83,10 +94,45 @@ const clearFilters = () => {
     loadTickets(1);
 };
 
+const focusSearch = () => {
+    if (searchInputRef.value) {
+        searchInputRef.value.focus();
+    }
+};
+
+const refreshCurrentPage = () => {
+    loadTickets(meta.value.current_page || 1);
+};
+
+const goToFirstTicket = async () => {
+    if (!tickets.value.length) {
+        quickActionMessage.value = 'Sem tickets para abrir';
+        setTimeout(() => {
+            quickActionMessage.value = '';
+        }, 1400);
+        return;
+    }
+
+    await router.push({ name: 'tickets.show', params: { id: tickets.value[0].id } });
+};
+
+const openNewTicketModal = async () => {
+    await router.push({ name: 'tickets.create' });
+};
+
 const formatDate = (value) => {
     if (!value) return '-';
-    return new Date(value).toLocaleString('pt-PT');
+
+    return new Date(value).toLocaleString('pt-PT', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
 };
+
+const clientLabel = (ticket) => ticket.contact?.name ?? ticket.entity?.name ?? '-';
 
 onMounted(async () => {
     await loadMeta();
@@ -95,21 +141,37 @@ onMounted(async () => {
 </script>
 
 <template>
-    <section class="page">
-        <div class="header-row">
-            <h1>Tickets</h1>
-            <RouterLink class="btn-primary" :to="{ name: 'tickets.create' }">Criar Ticket</RouterLink>
-        </div>
+    <section class="ticket-page">
+        <article class="ticket-panel">
+            <header class="panel-header">
+                <div>
+                    <h1>Ticket</h1>
+                    <p class="subtitle">{{ meta.total }} registos</p>
+                </div>
 
-        <article class="card">
-            <form @submit.prevent="applyFilters" class="filters">
-                <label>
-                    Pesquisa
-                    <input v-model="filters.search" placeholder="N ticket, assunto, email, entidade" />
+                <div class="header-actions">
+                    <button type="button" class="btn-ghost" disabled>Focus mode</button>
+                    <RouterLink class="btn-primary" :to="{ name: 'tickets.create' }">Novo Ticket</RouterLink>
+                </div>
+            </header>
+
+            <form class="filter-bar" @submit.prevent="applyFilters">
+                <label class="search-input">
+                    <input ref="searchInputRef" v-model="filters.search" placeholder="Search" />
                 </label>
 
                 <label>
-                    Inbox
+                    Tipo
+                    <select v-model="filters.type">
+                        <option value="">Todos</option>
+                        <option v-for="type in options.types" :key="type" :value="type">
+                            {{ typeLabels[type] ?? type }}
+                        </option>
+                    </select>
+                </label>
+
+                <label>
+                    Origem
                     <select v-model="filters.inbox_id">
                         <option value="">Todas</option>
                         <option v-for="inbox in options.inboxes" :key="inbox.id" :value="String(inbox.id)">
@@ -129,16 +191,6 @@ onMounted(async () => {
                 </label>
 
                 <label>
-                    Tipo
-                    <select v-model="filters.type">
-                        <option value="">Todos</option>
-                        <option v-for="type in options.types" :key="type" :value="type">
-                            {{ type }}
-                        </option>
-                    </select>
-                </label>
-
-                <label>
                     Entidade
                     <select v-model="filters.entity_id">
                         <option value="">Todas</option>
@@ -148,68 +200,66 @@ onMounted(async () => {
                     </select>
                 </label>
 
-                <label>
-                    Operador
-                    <select v-model="filters.assigned_operator_id">
-                        <option value="">Todos</option>
-                        <option v-for="operator in options.operators" :key="operator.id" :value="String(operator.id)">
-                            {{ operator.name }}
-                        </option>
-                    </select>
-                </label>
-
-                <div class="actions">
-                    <button type="submit" class="btn-primary">Aplicar filtros</button>
-                    <button type="button" class="btn-secondary" @click="clearFilters">Limpar</button>
+                <div class="filter-actions">
+                    <button type="submit" class="btn-ghost">Aplicar filtros</button>
+                    <button type="button" class="btn-clean" @click="clearFilters">Limpar</button>
                 </div>
             </form>
-        </article>
 
-        <article class="card">
             <p v-if="error" class="error">{{ error }}</p>
             <p v-if="loading" class="muted">A carregar...</p>
 
-            <table v-if="!loading">
-                <thead>
-                    <tr>
-                        <th>N Ticket</th>
-                        <th>Assunto</th>
-                        <th>Inbox</th>
-                        <th>Entidade</th>
-                        <th>Estado</th>
-                        <th>Prioridade</th>
-                        <th>Operador</th>
-                        <th>Atualizado</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr v-for="ticket in tickets" :key="ticket.id">
-                        <td>
-                            <RouterLink :to="{ name: 'tickets.show', params: { id: ticket.id } }">
-                                {{ ticket.ticket_number }}
-                            </RouterLink>
-                        </td>
-                        <td>{{ ticket.subject }}</td>
-                        <td>{{ ticket.inbox?.name ?? '-' }}</td>
-                        <td>{{ ticket.entity?.name ?? '-' }}</td>
-                        <td>
-                            <span class="badge" :class="'badge-' + ticket.status">
-                                {{ statusLabels[ticket.status] ?? ticket.status }}
-                            </span>
-                        </td>
-                        <td>{{ priorityLabels[ticket.priority] ?? ticket.priority }}</td>
-                        <td>{{ ticket.assigned_operator?.name ?? '-' }}</td>
-                        <td>{{ formatDate(ticket.last_activity_at) }}</td>
-                    </tr>
-                    <tr v-if="!tickets.length">
-                        <td colspan="8" class="muted">Sem tickets para os filtros escolhidos.</td>
-                    </tr>
-                </tbody>
-            </table>
+            <div class="table-wrap" v-if="!loading">
+                <table class="tickets-table">
+                    <thead>
+                        <tr>
+                            <th class="check-col"><input type="checkbox" disabled /></th>
+                            <th>Ticket ID</th>
+                            <th>Assunto</th>
+                            <th>Prioridade</th>
+                            <th>Tipo</th>
+                            <th>Cliente</th>
+                            <th>Data pedido</th>
+                            <th class="actions-col"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="ticket in tickets" :key="ticket.id">
+                            <td class="check-col"><input type="checkbox" disabled /></td>
+                            <td>
+                                <RouterLink class="ticket-id" :to="{ name: 'tickets.show', params: { id: ticket.id } }">
+                                    {{ ticket.ticket_number }}
+                                </RouterLink>
+                            </td>
+                            <td class="subject-cell">
+                                <RouterLink class="subject-link" :to="{ name: 'tickets.show', params: { id: ticket.id } }">
+                                    {{ ticket.subject }}
+                                </RouterLink>
+                            </td>
+                            <td>
+                                <span class="priority-pill" :class="`priority-${ticket.priority}`">
+                                    {{ priorityLabels[ticket.priority] ?? ticket.priority }}
+                                </span>
+                            </td>
+                            <td>
+                                <span class="type-pill">{{ typeLabels[ticket.type] ?? ticket.type }}</span>
+                            </td>
+                            <td>{{ clientLabel(ticket) }}</td>
+                            <td>{{ formatDate(ticket.last_activity_at) }}</td>
+                            <td class="actions-col">
+                                <RouterLink class="row-action" :to="{ name: 'tickets.show', params: { id: ticket.id } }">...</RouterLink>
+                            </td>
+                        </tr>
+                        <tr v-if="!tickets.length">
+                            <td colspan="8" class="empty-row">Sem tickets para os filtros escolhidos.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
 
-            <div class="pager">
+            <footer class="pager">
                 <button
-                    class="btn-secondary"
+                    class="btn-clean"
                     :disabled="meta.current_page <= 1"
                     @click="loadTickets(meta.current_page - 1)"
                 >
@@ -217,120 +267,374 @@ onMounted(async () => {
                 </button>
                 <span>Pagina {{ meta.current_page }} de {{ meta.last_page }}</span>
                 <button
-                    class="btn-secondary"
+                    class="btn-clean"
                     :disabled="meta.current_page >= meta.last_page"
                     @click="loadTickets(meta.current_page + 1)"
                 >
                     Seguinte
                 </button>
-            </div>
+            </footer>
         </article>
+
+        <nav class="quick-actions" aria-label="Ações rápidas">
+            <button type="button" title="Focar pesquisa" @click="focusSearch">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <circle cx="11" cy="11" r="6.2" stroke="currentColor" stroke-width="1.8" />
+                    <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+            </button>
+            <button type="button" title="Aplicar filtros" @click="applyFilters">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+            </button>
+            <button type="button" title="Limpar filtros" @click="clearFilters">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+            </button>
+            <button type="button" title="Atualizar lista" @click="refreshCurrentPage">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M20 11a8 8 0 1 0-2.3 5.6M20 6.5v4h-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+            </button>
+            <button type="button" title="Abrir primeiro ticket" @click="goToFirstTicket">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" stroke-width="1.8" />
+                    <path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+            </button>
+            <button type="button" title="Novo ticket" @click="openNewTicketModal">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+            </button>
+        </nav>
+
+        <p v-if="quickActionMessage" class="quick-message">{{ quickActionMessage }}</p>
     </section>
 </template>
 
 <style scoped>
-.page { display: grid; gap: 1rem; }
-.header-row {
+.ticket-page {
+    display: grid;
+}
+
+.ticket-panel {
+    background: #fff;
+    border: 1px solid #d8e1ed;
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+.panel-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: 0.8rem;
-}
-h1 { margin: 0; }
-.card {
-    background: #fff;
-    border: 1px solid #dbe4ee;
-    border-radius: 12px;
-    padding: 0.9rem;
+    padding: 0.8rem 1rem;
+    border-bottom: 1px solid #e3ebf5;
 }
 
-.filters {
+h1 {
+    margin: 0;
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+.subtitle {
+    margin: 0.2rem 0 0;
+    color: #64748b;
+    font-size: 0.84rem;
+}
+
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+}
+
+.btn-primary,
+.btn-ghost,
+.btn-clean {
+    border-radius: 9px;
+    border: 1px solid #d4dde8;
+    font: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    padding: 0.45rem 0.78rem;
+}
+
+.btn-primary {
+    background: #1fb873;
+    border-color: #1fb873;
+    color: #fff;
+}
+
+.btn-ghost {
+    background: #fff;
+    color: #334155;
+}
+
+.btn-clean {
+    background: #fff;
+    color: #334155;
+}
+
+.filter-bar {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.75rem;
+    grid-template-columns: 1.4fr repeat(4, minmax(120px, 1fr)) auto;
+    gap: 0.55rem;
+    align-items: end;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid #e3ebf5;
+    background: #fbfdff;
+}
+
+.search-input input {
+    padding-left: 0.7rem;
 }
 
 label {
     display: grid;
-    gap: 0.3rem;
-    color: #334155;
+    gap: 0.22rem;
+    color: #64748b;
+    font-size: 0.78rem;
 }
 
-input, select {
+input,
+select {
     border: 1px solid #dbe4ee;
     border-radius: 8px;
-    padding: 0.52rem 0.62rem;
+    padding: 0.46rem 0.58rem;
     font: inherit;
-}
-
-.actions {
-    grid-column: 1 / -1;
-    display: flex;
-    gap: 0.5rem;
-}
-
-.btn-primary,
-.btn-secondary {
-    border: 1px solid #dbe4ee;
-    border-radius: 8px;
-    padding: 0.45rem 0.75rem;
-    font: inherit;
-    cursor: pointer;
-    text-decoration: none;
-}
-
-.btn-primary {
-    background: #0f766e;
-    color: #fff;
-    border-color: #0f766e;
-}
-
-.btn-secondary {
+    color: #0f172a;
     background: #fff;
 }
 
-table {
+.filter-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.table-wrap {
+    overflow: auto;
+}
+
+.tickets-table {
     width: 100%;
+    min-width: 980px;
     border-collapse: collapse;
-    font-size: 0.93rem;
 }
 
-th, td {
+.tickets-table th,
+.tickets-table td {
+    border-bottom: 1px solid #e8edf5;
     text-align: left;
-    border-bottom: 1px solid #e5edf5;
-    padding: 0.58rem 0.45rem;
+    padding: 0.5rem 0.55rem;
+    vertical-align: middle;
+    font-size: 0.9rem;
 }
 
-.badge {
+.tickets-table th {
+    font-size: 0.8rem;
+    color: #475569;
+    font-weight: 600;
+    background: #fff;
+}
+
+.check-col {
+    width: 38px;
+    text-align: center;
+}
+
+.actions-col {
+    width: 42px;
+    text-align: center;
+}
+
+.ticket-id {
+    color: #0f172a;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.subject-cell {
+    max-width: 290px;
+}
+
+.subject-link {
+    color: #0f172a;
+    text-decoration: none;
+    display: inline-block;
+    max-width: 280px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.priority-pill,
+.type-pill {
     display: inline-flex;
-    padding: 0.18rem 0.52rem;
+    align-items: center;
     border-radius: 999px;
+    padding: 0.15rem 0.55rem;
     font-size: 0.77rem;
     border: 1px solid transparent;
 }
 
-.badge-open { color: #166534; background: #dcfce7; border-color: #bbf7d0; }
-.badge-in_progress { color: #1d4ed8; background: #dbeafe; border-color: #bfdbfe; }
-.badge-pending { color: #854d0e; background: #fef9c3; border-color: #fde68a; }
-.badge-closed { color: #166534; background: #dcfce7; border-color: #86efac; }
-.badge-cancelled { color: #7f1d1d; background: #fee2e2; border-color: #fecaca; }
+.priority-low { color: #166534; background: #dcfce7; border-color: #bbf7d0; }
+.priority-medium { color: #854d0e; background: #fef3c7; border-color: #fde68a; }
+.priority-high { color: #991b1b; background: #fee2e2; border-color: #fecaca; }
+.priority-urgent { color: #7f1d1d; background: #fee2e2; border-color: #fca5a5; }
+
+.type-pill {
+    color: #334155;
+    background: #f1f5f9;
+    border-color: #dbe4ee;
+}
+
+.row-action {
+    color: #64748b;
+    text-decoration: none;
+    font-weight: 700;
+}
+
+.empty-row {
+    color: #64748b;
+    text-align: center;
+    padding: 1rem;
+}
 
 .pager {
-    margin-top: 0.8rem;
+    padding: 0.65rem 1rem;
     display: flex;
     justify-content: flex-end;
     align-items: center;
     gap: 0.55rem;
 }
 
-.muted { color: #475569; }
-.error { color: #991b1b; }
+.muted {
+    padding: 0 1rem;
+    color: #64748b;
+}
 
-@media (max-width: 900px) {
-    .filters {
+.error {
+    margin: 0;
+    padding: 0.65rem 1rem;
+    color: #991b1b;
+    border-bottom: 1px solid #fecaca;
+    background: #fef2f2;
+}
+
+.quick-actions {
+    position: fixed;
+    right: 1.7rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: grid;
+    gap: 0.45rem;
+    z-index: 65;
+}
+
+.quick-actions button {
+    width: 40px;
+    height: 40px;
+    border-radius: 999px;
+    border: 1px solid #d9e2ee;
+    background: #f8fafc;
+    color: #64748b;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.quick-actions button:hover {
+    background: #e8fbf2;
+    color: #0f766e;
+    border-color: #9fd9c2;
+}
+
+.quick-actions svg {
+    width: 18px;
+    height: 18px;
+}
+
+.quick-message {
+    position: fixed;
+    right: 1.6rem;
+    top: calc(50% + 190px);
+    margin: 0;
+    z-index: 66;
+    border: 1px solid #9fd9c2;
+    background: #ecfdf5;
+    color: #0d704e;
+    border-radius: 8px;
+    padding: 0.34rem 0.5rem;
+    font-size: 0.82rem;
+}
+
+@media (max-width: 1280px) {
+    .filter-bar {
+        grid-template-columns: 1fr 1fr 1fr;
+    }
+
+    .filter-actions {
+        grid-column: 1 / -1;
+    }
+
+    .quick-actions {
+        right: 1.05rem;
+    }
+}
+
+@media (max-width: 720px) {
+    .panel-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    h1 {
+        font-size: 1.65rem;
+    }
+
+    .header-actions {
+        width: 100%;
+    }
+
+    .header-actions .btn-primary,
+    .header-actions .btn-ghost {
+        flex: 1;
+        text-align: center;
+    }
+
+    .filter-bar {
         grid-template-columns: 1fr;
+    }
+
+    .quick-actions {
+        position: sticky;
+        top: auto;
+        right: auto;
+        transform: none;
+        margin-top: 0.55rem;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        background: #fff;
+        border: 1px solid #d9e2ee;
+        border-radius: 12px;
+        padding: 0.4rem;
+    }
+
+    .quick-actions button {
+        width: 100%;
+        border-radius: 10px;
+    }
+
+    .quick-message {
+        position: static;
+        width: fit-content;
     }
 }
 </style>
-
-

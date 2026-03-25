@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Contact extends Model
@@ -17,13 +18,13 @@ class Contact extends Model
      * @var list<string>
      */
     protected $fillable = [
-        'entity_id',
+        'function_id',
         'user_id',
         'name',
         'email',
         'phone',
-        'job_title',
-        'is_primary',
+        'mobile_phone',
+        'internal_notes',
         'is_active',
     ];
 
@@ -35,17 +36,25 @@ class Contact extends Model
     protected function casts(): array
     {
         return [
-            'is_primary' => 'boolean',
             'is_active' => 'boolean',
         ];
     }
 
     /**
-     * Get the entity that owns the contact.
+     * Get entities linked to the contact.
      */
-    public function entity(): BelongsTo
+    public function entities(): BelongsToMany
     {
-        return $this->belongsTo(Entity::class);
+        return $this->belongsToMany(Entity::class, 'contact_entity')
+            ->withTimestamps();
+    }
+
+    /**
+     * Get the contact function.
+     */
+    public function contactFunction(): BelongsTo
+    {
+        return $this->belongsTo(ContactFunction::class, 'function_id');
     }
 
     /**

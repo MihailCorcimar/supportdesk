@@ -4,10 +4,9 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-class Entity extends Model
+class ContactFunction extends Model
 {
     use HasFactory;
 
@@ -17,19 +16,8 @@ class Entity extends Model
      * @var list<string>
      */
     protected $fillable = [
-        'type',
         'name',
         'slug',
-        'tax_number',
-        'email',
-        'phone',
-        'mobile_phone',
-        'website',
-        'address_line',
-        'postal_code',
-        'city',
-        'country',
-        'notes',
         'is_active',
     ];
 
@@ -46,19 +34,10 @@ class Entity extends Model
     }
 
     /**
-     * Get all contacts for the entity.
+     * Get contacts using this function.
      */
-    public function contacts(): BelongsToMany
+    public function contacts(): HasMany
     {
-        return $this->belongsToMany(Contact::class, 'contact_entity')
-            ->withTimestamps();
-    }
-
-    /**
-     * Get all tickets for the entity.
-     */
-    public function tickets(): HasMany
-    {
-        return $this->hasMany(Ticket::class);
+        return $this->hasMany(Contact::class, 'function_id');
     }
 }

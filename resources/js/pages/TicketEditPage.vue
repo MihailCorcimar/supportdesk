@@ -38,7 +38,9 @@ const filteredContacts = computed(() => {
     if (!ticket.value?.available_contacts) return [];
     if (!form.entity_id) return ticket.value.available_contacts;
 
-    return ticket.value.available_contacts.filter((contact) => String(contact.entity_id) === String(form.entity_id));
+    return ticket.value.available_contacts.filter(
+        (contact) => Array.isArray(contact.entity_ids) && contact.entity_ids.includes(Number(form.entity_id)),
+    );
 });
 
 const loadTicket = async () => {

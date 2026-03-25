@@ -26,6 +26,8 @@ class EntityApiController extends Controller
                 $inner->where('name', 'like', "%{$search}%")
                     ->orWhere('slug', 'like', "%{$search}%")
                     ->orWhere('email', 'like', "%{$search}%")
+                    ->orWhere('phone', 'like', "%{$search}%")
+                    ->orWhere('mobile_phone', 'like', "%{$search}%")
                     ->orWhere('tax_number', 'like', "%{$search}%");
             });
         }
@@ -62,6 +64,7 @@ class EntityApiController extends Controller
             'tax_number' => ['nullable', 'string', 'max:50'],
             'email' => ['nullable', 'email', 'max:255'],
             'phone' => ['nullable', 'string', 'max:50'],
+            'mobile_phone' => ['nullable', 'string', 'max:50'],
             'website' => ['nullable', 'url', 'max:255'],
             'address_line' => ['nullable', 'string', 'max:255'],
             'postal_code' => ['nullable', 'string', 'max:20'],
@@ -80,6 +83,7 @@ class EntityApiController extends Controller
             'tax_number' => $validated['tax_number'] ?? null,
             'email' => $validated['email'] ?? null,
             'phone' => $validated['phone'] ?? null,
+            'mobile_phone' => $validated['mobile_phone'] ?? null,
             'website' => $validated['website'] ?? null,
             'address_line' => $validated['address_line'] ?? null,
             'postal_code' => $validated['postal_code'] ?? null,
@@ -108,6 +112,7 @@ class EntityApiController extends Controller
             'tax_number' => ['sometimes', 'nullable', 'string', 'max:50'],
             'email' => ['sometimes', 'nullable', 'email', 'max:255'],
             'phone' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'mobile_phone' => ['sometimes', 'nullable', 'string', 'max:50'],
             'website' => ['sometimes', 'nullable', 'url', 'max:255'],
             'address_line' => ['sometimes', 'nullable', 'string', 'max:255'],
             'postal_code' => ['sometimes', 'nullable', 'string', 'max:20'],
@@ -130,7 +135,7 @@ class EntityApiController extends Controller
             $entity->slug = $this->resolveSlug($entity->name, $entity->id);
         }
 
-        foreach (['tax_number', 'email', 'phone', 'website', 'address_line', 'postal_code', 'city', 'notes'] as $field) {
+        foreach (['tax_number', 'email', 'phone', 'mobile_phone', 'website', 'address_line', 'postal_code', 'city', 'notes'] as $field) {
             if (array_key_exists($field, $validated)) {
                 $entity->{$field} = $validated[$field];
             }
@@ -192,6 +197,7 @@ class EntityApiController extends Controller
             'tax_number' => $entity->tax_number,
             'email' => $entity->email,
             'phone' => $entity->phone,
+            'mobile_phone' => $entity->mobile_phone,
             'website' => $entity->website,
             'address_line' => $entity->address_line,
             'postal_code' => $entity->postal_code,

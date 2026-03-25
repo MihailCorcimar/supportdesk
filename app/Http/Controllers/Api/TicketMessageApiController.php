@@ -14,6 +14,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Database\Eloquent\Builder;
 
 class TicketMessageApiController extends Controller
 {
@@ -45,7 +46,7 @@ class TicketMessageApiController extends Controller
 
         if ($user->isClient()) {
             $contact = Contact::query()
-                ->where('entity_id', $ticket->entity_id)
+                ->whereHas('entities', fn (Builder $query) => $query->whereKey($ticket->entity_id))
                 ->where('user_id', $user->id)
                 ->where('is_active', true)
                 ->firstOrFail();

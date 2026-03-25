@@ -65,7 +65,7 @@ class UserManagementApiController extends Controller
             : $actor->manageableInboxes()->pluck('inboxes.id')->all();
 
         $query = User::query()
-            ->with(['accessibleInboxes:id,name', 'contacts.entity:id,name'])
+            ->with(['accessibleInboxes:id,name', 'contacts.entities:id,name'])
             ->orderBy('name');
 
         $query->where(function (Builder $inner) use ($manageableInboxIds): void {
@@ -198,7 +198,7 @@ class UserManagementApiController extends Controller
         return response()->json([
             'message' => 'User created successfully.',
             'data' => [
-                'user' => $this->serializeUser($user->load(['accessibleInboxes:id,name', 'contacts.entity:id,name'])),
+                'user' => $this->serializeUser($user->load(['accessibleInboxes:id,name', 'contacts.entities:id,name'])),
                 'invite' => $invitePayload,
             ],
         ], 201);
@@ -255,7 +255,7 @@ class UserManagementApiController extends Controller
         }
 
         if ($user->isClient() && array_key_exists('contact_name', $validated)) {
-            $contact = Contact::query()->where('user_id', $user->id)->orderByDesc('is_primary')->first();
+            $contact = Contact::query()->where('user_id', $user->id)->orderBy('id')->first();
             if ($contact && $validated['contact_name'] && $contact->name !== $validated['contact_name']) {
                 $changes['contact_name'] = ['old' => $contact->name, 'new' => (string) $validated['contact_name']];
                 $contact->name = (string) $validated['contact_name'];
@@ -275,7 +275,7 @@ class UserManagementApiController extends Controller
 
         return response()->json([
             'message' => 'User updated successfully.',
-            'data' => $this->serializeUser($user->load(['accessibleInboxes:id,name', 'contacts.entity:id,name'])),
+            'data' => $this->serializeUser($user->load(['accessibleInboxes:id,name', 'contacts.entities:id,name'])),
         ]);
     }
 
@@ -324,7 +324,7 @@ class UserManagementApiController extends Controller
 
         return response()->json([
             'message' => 'Operator inbox permissions updated.',
-            'data' => $this->serializeUser($user->load(['accessibleInboxes:id,name', 'contacts.entity:id,name'])),
+            'data' => $this->serializeUser($user->load(['accessibleInboxes:id,name', 'contacts.entities:id,name'])),
         ]);
     }
 
@@ -379,7 +379,8 @@ class UserManagementApiController extends Controller
      */
     private function serializeUser(User $user): array
     {
-        $primaryContact = $user->contacts->sortByDesc(fn (Contact $contact) => $contact->is_primary)->first();
+        $primaryContact = $user->contacts->first();
+        $primaryEntity = $primaryContact?->entities?->first();
 
         return [
             'id' => $user->id,
@@ -397,9 +398,9 @@ class UserManagementApiController extends Controller
             'primary_contact' => $primaryContact ? [
                 'id' => $primaryContact->id,
                 'name' => $primaryContact->name,
-                'entity' => $primaryContact->entity ? [
-                    'id' => $primaryContact->entity->id,
-                    'name' => $primaryContact->entity->name,
+                'entity' => $primaryEntity ? [
+                    'id' => $primaryEntity->id,
+                    'name' => $primaryEntity->name,
                 ] : null,
             ] : null,
         ];
@@ -459,27 +460,25 @@ class UserManagementApiController extends Controller
         $entity = Entity::query()->whereKey($entityId)->where('is_active', true)->firstOrFail();
 
         $contact = Contact::query()
-            ->where('entity_id', $entity->id)
             ->where('email', $user->email)
             ->first();
 
         if ($contact && $contact->user_id && $contact->user_id !== $user->id) {
-            abort(422, 'A contact with this email already belongs to another user in the selected entity.');
+            abort(422, 'A contact with this email already belongs to another user.');
         }
 
         $contact ??= new Contact([
-            'entity_id' => $entity->id,
             'email' => $user->email,
         ]);
 
         $contact->fill([
             'user_id' => $user->id,
             'name' => $contactName,
-            'is_primary' => true,
             'is_active' => true,
         ]);
 
         $contact->save();
+        $contact->entities()->syncWithoutDetaching([$entity->id]);
     }
 
     /**
