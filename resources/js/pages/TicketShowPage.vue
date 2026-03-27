@@ -1,24 +1,30 @@
 ﻿<script setup>
-import { computed, nextTick, onMounted, reactive, ref } from 'vue';
-import { useRoute } from 'vue-router';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import api from '../api/client';
 import { useAuthStore } from '../stores/auth';
 
 const route = useRoute();
+const router = useRouter();
 const auth = useAuthStore();
+const availableTopTabs = ['conversation', 'task', 'activity_logs', 'notes'];
+const normalizeTopTab = (tab) => (availableTopTabs.includes(tab) ? tab : 'conversation');
 
 const loading = ref(false);
 const error = ref('');
 const quickActionMessage = ref('');
-const activeTopTab = ref('activity_logs');
+const activeTopTab = ref(normalizeTopTab(typeof route.query.tab === 'string' ? route.query.tab : 'conversation'));
 const ticket = ref(null);
 const messageBody = ref('');
 const isInternal = ref(false);
 const messageFiles = ref([]);
+const noteBody = ref('');
 const savingStatus = ref(false);
 const savingAssignment = ref(false);
 const savingMetadata = ref(false);
 const sendingMessage = ref(false);
+const sendingNote = ref(false);
+const statusMenuOpen = ref(false);
 
 const statusForm = reactive({ status: '' });
 const assignmentForm = reactive({ assigned_operator_id: '' });
@@ -68,6 +74,12 @@ const canAssign = computed(() => ticket.value?.permissions?.can_assign);
 const canUpdateMetadata = computed(() => ticket.value?.permissions?.can_update_metadata);
 const canQuickClose = computed(() => canUpdateStatus.value && !['closed', 'cancelled'].includes(ticket.value?.status));
 const internalNotes = computed(() => (ticket.value?.messages || []).filter((message) => message.is_internal));
+const canAddNotes = computed(() => isOperator.value && ticket.value?.permissions?.can_add_internal_note);
+const statusOrder = ['open', 'in_progress', 'pending', 'closed', 'cancelled'];
+const headerStatusOptions = computed(() => statusOrder.filter((status) => status !== ticket.value?.status));
+const isAlreadyClosed = computed(() => ticket.value?.status === 'closed');
+const previousTicket = computed(() => ticket.value?.navigation?.previous ?? null);
+const nextTicket = computed(() => ticket.value?.navigation?.next ?? null);
 
 const loadTicket = async () => {
     loading.value = true;
@@ -113,6 +125,27 @@ const closeTicketQuick = async () => {
     await updateStatus();
 };
 
+const updateStatusTo = async (newStatus) => {
+    statusMenuOpen.value = false;
+    statusForm.status = newStatus;
+    await updateStatus();
+};
+
+const toggleStatusMenu = () => {
+    statusMenuOpen.value = !statusMenuOpen.value;
+};
+
+const closeStatusMenuOnOutsideClick = (event) => {
+    if (!statusMenuOpen.value) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (!target.closest('.status-split')) {
+        statusMenuOpen.value = false;
+    }
+};
+
 const scrollToSection = (sectionId) => {
     const element = document.getElementById(sectionId);
 
@@ -145,6 +178,16 @@ const copyTicketId = async () => {
             quickActionMessage.value = '';
         }, 1400);
     }
+};
+
+const goToPreviousTicket = async () => {
+    if (!previousTicket.value) return;
+    await router.push({ name: 'tickets.show', params: { id: previousTicket.value.id } });
+};
+
+const goToNextTicket = async () => {
+    if (!nextTicket.value) return;
+    await router.push({ name: 'tickets.show', params: { id: nextTicket.value.id } });
 };
 
 const updateAssignment = async () => {
@@ -234,6 +277,34 @@ const sendMessage = async () => {
     }
 };
 
+const sendNote = async () => {
+    if (!noteBody.value.trim()) {
+        return;
+    }
+
+    sendingNote.value = true;
+    error.value = '';
+
+    try {
+        const formData = new FormData();
+        formData.append('body', noteBody.value.trim());
+        formData.append('is_internal', '1');
+
+        await api.post(`/tickets/${route.params.id}/messages`, formData, {
+            headers: {
+                'Content-Type': 'multipart/form-data',
+            },
+        });
+
+        noteBody.value = '';
+        await loadTicket();
+    } catch (exception) {
+        error.value = exception?.response?.data?.message || 'Falha ao adicionar nota.';
+    } finally {
+        sendingNote.value = false;
+    }
+};
+
 const formatDate = (value) => {
     if (!value) return '-';
     return new Date(value).toLocaleString('pt-PT');
@@ -275,34 +346,184 @@ const activityIconClass = (action) => {
     if (action === 'ticket_created') return 'activity-created';
     if (action === 'status_updated') return 'activity-status';
     if (action === 'assignment_updated') return 'activity-assignment';
-    if (action === 'field_updated') return 'activity-field';
+    if (action === 'field_updated') return 'activity-meta';
     return 'activity-default';
 };
 
+const activitySymbol = (action) => {
+    if (action === 'ticket_created') return '✦';
+    if (action === 'status_updated') return '⟳';
+    if (action === 'assignment_updated') return '↻';
+    if (action === 'field_updated') return '⌁';
+    return '•';
+};
+
+const formatActivityTime = (value) => {
+    if (!value) return '--:--';
+
+    return new Date(value).toLocaleTimeString('pt-PT', {
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+};
+
+const activityTitle = (log) => {
+    const label = actionLabels[log.action] ?? log.action;
+
+    if (log.field) {
+        return `${label} · ${log.field}`;
+    }
+
+    return label;
+};
+
+const activityChange = (log) => {
+    if (!log.field) return '';
+
+    return `${log.old_value ?? '-'} -> ${log.new_value ?? '-'}`;
+};
+
+const activityGroupLabel = (value) => {
+    const date = new Date(value);
+    const now = new Date();
+
+    const sameDay = date.toDateString() === now.toDateString();
+    if (sameDay) return 'Today';
+
+    const startOfWeek = new Date(now);
+    startOfWeek.setHours(0, 0, 0, 0);
+    startOfWeek.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+
+    if (date >= startOfWeek) return 'This week';
+
+    if (date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()) {
+        return 'This month';
+    }
+
+    return 'Earlier';
+};
+
+const activityGroups = computed(() => {
+    const groupsMap = new Map();
+    const orderedGroupNames = ['Today', 'This week', 'This month', 'Earlier'];
+    const logs = ticket.value?.logs || [];
+
+    logs.forEach((log) => {
+        const key = activityGroupLabel(log.created_at);
+        if (!groupsMap.has(key)) {
+            groupsMap.set(key, []);
+        }
+        groupsMap.get(key).push(log);
+    });
+
+    return orderedGroupNames
+        .filter((name) => groupsMap.has(name))
+        .map((name) => ({
+            label: name,
+            logs: groupsMap.get(name),
+        }));
+});
+
 onMounted(loadTicket);
+onMounted(() => {
+    document.addEventListener('click', closeStatusMenuOnOutsideClick);
+});
+onBeforeUnmount(() => {
+    document.removeEventListener('click', closeStatusMenuOnOutsideClick);
+});
+watch(
+    () => route.params.id,
+    () => {
+        statusMenuOpen.value = false;
+        loadTicket();
+    },
+);
+watch(
+    () => route.query.tab,
+    (tab) => {
+        activeTopTab.value = normalizeTopTab(typeof tab === 'string' ? tab : 'conversation');
+    },
+);
 </script>
 
 <template>
     <section v-if="!loading && ticket" class="ticket-workspace">
         <header class="ticket-header">
             <div class="header-left">
-                <RouterLink class="back-link" :to="{ name: 'tickets.index' }">Ticket list</RouterLink>
-                <p class="ticket-title">
+                <RouterLink class="back-link" :to="{ name: 'tickets.index' }">
+                    <span class="back-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path d="M14.5 6.5L9 12l5.5 5.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                    </span>
+                    <span>Lista Tickets</span>
+                </RouterLink>
+            </div>
+
+            <div class="header-center">
+                <button
+                    type="button"
+                    class="ticket-step"
+                    :disabled="!previousTicket"
+                    aria-label="Ticket anterior"
+                    @click="goToPreviousTicket"
+                >
+                    <svg class="step-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M14.5 6.5L9 12l5.5 5.5" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                </button>
+
+                <p class="ticket-title" :title="ticket.subject">
                     <strong>{{ ticket.ticket_number }}</strong>
                     <span>{{ ticket.subject }}</span>
                 </p>
+
+                <button
+                    type="button"
+                    class="ticket-step"
+                    :disabled="!nextTicket"
+                    aria-label="Ticket seguinte"
+                    @click="goToNextTicket"
+                >
+                    <svg class="step-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M9.5 6.5L15 12l-5.5 5.5" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                </button>
             </div>
 
             <div class="header-actions">
-                <button
-                    v-if="isOperator && canUpdateStatus"
-                    class="btn-success"
-                    type="button"
-                    :disabled="savingStatus"
-                    @click="closeTicketQuick"
-                >
-                    {{ savingStatus ? 'A fechar...' : 'Submeter como fechado' }}
-                </button>
+                <div v-if="isOperator && canUpdateStatus" class="status-split">
+                    <button
+                        class="btn-success status-main"
+                        type="button"
+                        :disabled="savingStatus || isAlreadyClosed"
+                        @click="closeTicketQuick"
+                    >
+                        {{ savingStatus ? 'A atualizar...' : 'Submeter como fechado' }}
+                    </button>
+
+                    <button
+                        class="btn-success status-toggle"
+                        type="button"
+                        aria-label="Escolher outro estado"
+                        :aria-expanded="statusMenuOpen"
+                        @click.stop="toggleStatusMenu"
+                    >
+                        ▾
+                    </button>
+
+                    <div v-if="statusMenuOpen" class="status-menu">
+                        <button
+                            v-for="status in headerStatusOptions"
+                            :key="`header-status-${status}`"
+                            type="button"
+                            class="status-option"
+                            @click="updateStatusTo(status)"
+                        >
+                            {{ statusLabels[status] ?? status }}
+                        </button>
+                    </div>
+                </div>
 
                 <RouterLink
                     v-if="ticket.permissions?.can_update"
@@ -345,7 +566,7 @@ onMounted(loadTicket);
                         :class="['tab', { active: activeTopTab === 'notes' }]"
                         @click="activeTopTab = 'notes'"
                     >
-                        Notes
+                        Notas
                     </button>
                 </div>
 
@@ -415,62 +636,35 @@ onMounted(loadTicket);
                 </div>
 
                 <div v-else-if="activeTopTab === 'activity_logs'" class="activity-stream">
-                    <article class="activity-item" v-for="log in ticket.logs" :key="log.id">
-                        <span class="activity-dot" :class="activityIconClass(log.action)"></span>
-                        <div class="activity-body">
-                            <p>
-                                <strong>{{ actionLabels[log.action] ?? log.action }}</strong>
-                                <span> · {{ logActor(log) }} · {{ formatDate(log.created_at) }}</span>
-                            </p>
-                            <p v-if="log.field" class="activity-field">
-                                {{ log.field }}: {{ log.old_value ?? '-' }} -> {{ log.new_value ?? '-' }}
-                            </p>
+                    <section class="activity-group" v-for="group in activityGroups" :key="group.label">
+                        <h3 class="activity-group-title">{{ group.label }}</h3>
+
+                        <div class="activity-list">
+                            <article class="activity-item" v-for="log in group.logs" :key="log.id">
+                                <span class="activity-marker" :class="activityIconClass(log.action)">
+                                    {{ activitySymbol(log.action) }}
+                                </span>
+                                <div class="activity-body">
+                                    <p class="activity-line">
+                                        <strong>{{ activityTitle(log) }}</strong>
+                                        <span v-if="log.field"> · {{ activityChange(log) }}</span>
+                                        <span> · {{ logActor(log) }}</span>
+                                        <span> · {{ formatActivityTime(log.created_at) }}</span>
+                                        <span> · {{ formatDate(log.created_at) }}</span>
+                                    </p>
+                                </div>
+                            </article>
                         </div>
-                    </article>
+                    </section>
+
                     <p v-if="!ticket.logs.length" class="empty-row">Sem atividade registada.</p>
                 </div>
 
                 <div v-else-if="activeTopTab === 'task'" class="task-content">
                     <h3>Tarefa operacional</h3>
-                    <p>Gerir estado, atribuição e metadados no painel lateral.</p>
-                    <button v-if="isOperator" type="button" class="btn-ghost" @click="scrollToSection('management-section')">
-                        Ir para gestão operacional
-                    </button>
-                </div>
+                    <p v-if="!isOperator">Sem ações operacionais disponíveis para o seu perfil.</p>
 
-                <div v-else class="notes-content">
-                    <h3>Notas internas</h3>
-                    <article class="note-item" v-for="message in internalNotes" :key="`note-${message.id}`">
-                        <div class="note-head">
-                            <strong>{{ messageAuthor(message) }}</strong>
-                            <small>{{ formatDate(message.created_at) }}</small>
-                        </div>
-                        <p>{{ message.body || 'Sem texto.' }}</p>
-                    </article>
-                    <p v-if="!internalNotes.length" class="empty-row">Sem notas internas.</p>
-                </div>
-            </article>
-
-            <aside class="context-panel">
-                <article id="summary-section" class="panel-card">
-                    <h2>Resumo</h2>
-                    <div class="kv-grid">
-                        <div><span>Inbox</span><strong>{{ ticket.inbox?.name ?? '-' }}</strong></div>
-                        <div><span>Entidade</span><strong>{{ ticket.entity?.name ?? '-' }}</strong></div>
-                        <div><span>Estado</span><strong><span class="badge" :class="`badge-${ticket.status}`">{{ statusLabels[ticket.status] ?? ticket.status }}</span></strong></div>
-                        <div><span>Prioridade</span><strong>{{ priorityLabels[ticket.priority] ?? ticket.priority }}</strong></div>
-                        <div><span>Tipo</span><strong>{{ typeLabels[ticket.type] ?? ticket.type }}</strong></div>
-                        <div><span>Operador</span><strong>{{ ticket.assigned_operator?.name ?? 'Sem atribuicao' }}</strong></div>
-                        <div><span>Criado</span><strong>{{ formatDate(ticket.created_at) }}</strong></div>
-                        <div><span>Ultima atividade</span><strong>{{ formatDate(ticket.last_activity_at) }}</strong></div>
-                        <div class="full-row"><span>Conhecimento</span><strong>{{ ticket.cc_emails?.length ? ticket.cc_emails.join(', ') : '-' }}</strong></div>
-                    </div>
-                </article>
-
-                <article id="management-section" class="panel-card" v-if="isOperator">
-                    <h2>Gestao operacional</h2>
-
-                    <form class="stack" @submit.prevent="updateStatus" v-if="canUpdateStatus">
+                    <form class="stack" @submit.prevent="updateStatus" v-if="isOperator && canUpdateStatus">
                         <label>
                             Estado
                             <select v-model="statusForm.status">
@@ -482,7 +676,7 @@ onMounted(loadTicket);
                         </button>
                     </form>
 
-                    <form class="stack" @submit.prevent="updateAssignment" v-if="canAssign">
+                    <form class="stack" @submit.prevent="updateAssignment" v-if="isOperator && canAssign">
                         <label>
                             Operador
                             <select v-model="assignmentForm.assigned_operator_id">
@@ -497,7 +691,7 @@ onMounted(loadTicket);
                         </button>
                     </form>
 
-                    <form class="stack" @submit.prevent="updateMetadata" v-if="canUpdateMetadata">
+                    <form class="stack" @submit.prevent="updateMetadata" v-if="isOperator && canUpdateMetadata">
                         <label>
                             Assunto
                             <input v-model="metadataForm.subject" maxlength="255" required>
@@ -535,27 +729,36 @@ onMounted(loadTicket);
                             {{ savingMetadata ? 'A guardar...' : 'Atualizar metadados' }}
                         </button>
                     </form>
-                </article>
+                </div>
 
-                <article id="history-section" class="panel-card">
-                    <h2>Historico</h2>
+                <div v-else class="notes-content">
+                    <form v-if="canAddNotes" class="note-form" @submit.prevent="sendNote">
+                        <textarea
+                            v-model="noteBody"
+                            placeholder="Escreve uma nota interna..."
+                            maxlength="3000"
+                            rows="3"
+                        ></textarea>
+                        <button class="btn-send-note" type="submit" :disabled="sendingNote || !noteBody.trim()">
+                            {{ sendingNote ? 'A submeter...' : 'Submeter' }}
+                        </button>
+                    </form>
 
-                    <div class="log-list">
-                        <article class="log-item" v-for="log in ticket.logs" :key="log.id">
-                            <div class="log-head">
-                                <strong>{{ actionLabels[log.action] ?? log.action }}</strong>
-                                <small>{{ formatDate(log.created_at) }}</small>
+                    <p v-else class="notes-muted">Só operadores podem adicionar notas internas.</p>
+
+                    <article class="note-row" v-for="message in internalNotes" :key="`note-${message.id}`">
+                        <div class="note-avatar">{{ messageAuthorInitial(message) }}</div>
+                        <div class="note-item">
+                            <div class="note-head">
+                                <strong>{{ messageAuthor(message) }}</strong>
+                                <small>{{ formatActivityTime(message.created_at) }}</small>
                             </div>
-                            <p>Por: {{ logActor(log) }}</p>
-                            <p v-if="log.field">
-                                Campo {{ log.field }}: {{ log.old_value ?? '-' }} -> {{ log.new_value ?? '-' }}
-                            </p>
-                        </article>
+                            <p>{{ message.body || 'Sem texto.' }}</p>
+                        </div>
+                    </article>
+                </div>
+            </article>
 
-                        <p v-if="!ticket.logs.length" class="empty-row">Sem registos.</p>
-                    </div>
-                </article>
-            </aside>
         </div>
 
         <nav class="quick-actions" aria-label="Ações rápidas">
@@ -571,23 +774,6 @@ onMounted(loadTicket);
             <button type="button" title="Responder" @click="focusComposer">
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                     <path d="M8 12h8M8 8h8M8 16h5M5 4h14a2 2 0 0 1 2 2v12l-4-3H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.8" />
-                </svg>
-            </button>
-            <button type="button" title="Resumo" @click="scrollToSection('summary-section')">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" stroke-width="1.8" />
-                    <path d="M8 9h8M8 13h8M8 17h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-                </svg>
-            </button>
-            <button
-                v-if="isOperator"
-                type="button"
-                title="Gestão operacional"
-                @click="scrollToSection('management-section')"
-            >
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8" />
-                    <path d="M12 4.5v2.2M12 17.3v2.2M4.5 12h2.2M17.3 12h2.2M6.8 6.8l1.6 1.6M15.6 15.6l1.6 1.6M17.2 6.8l-1.6 1.6M8.4 15.6l-1.6 1.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
                 </svg>
             </button>
             <button type="button" title="Activity logs" @click="activeTopTab = 'activity_logs'">
@@ -628,8 +814,8 @@ onMounted(loadTicket);
 }
 
 .ticket-header {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
     gap: 0.8rem;
     background: #fff;
@@ -639,26 +825,97 @@ onMounted(loadTicket);
 }
 
 .header-left {
-    display: grid;
-    gap: 0.35rem;
+    min-width: 0;
 }
 
 .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
     font-size: 0.82rem;
     color: #4b5563;
     text-decoration: none;
 }
 
+.back-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #eef2f7;
+    color: #334155;
+    transition: background-color 120ms ease, color 120ms ease;
+}
+
+.back-link:hover .back-icon {
+    background: #dff7ed;
+    color: #0f766e;
+}
+
+.back-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.header-center {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+    justify-self: center;
+}
+
+.ticket-step {
+    border: 1px solid #d8e1ed;
+    background: #f8fafc;
+    color: #64748b;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.ticket-step:hover:not(:disabled) {
+    background: #e8fbf2;
+    border-color: #a6dfc6;
+    color: #0f766e;
+}
+
+.ticket-step:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.step-icon {
+    width: 16px;
+    height: 16px;
+}
+
 .ticket-title {
     margin: 0;
-    display: flex;
-    gap: 0.65rem;
+    display: inline-flex;
+    gap: 0.45rem;
     align-items: center;
-    flex-wrap: wrap;
+    min-width: 0;
+    max-width: min(52vw, 700px);
 }
 
 .ticket-title strong {
-    font-size: 1.05rem;
+    font-size: 1.04rem;
+    white-space: nowrap;
+}
+
+.ticket-title span {
+    color: #0f172a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .header-actions {
@@ -666,6 +923,60 @@ onMounted(loadTicket);
     align-items: center;
     gap: 0.45rem;
     flex-wrap: wrap;
+    justify-self: end;
+}
+
+.status-split {
+    position: relative;
+    display: inline-flex;
+    align-items: stretch;
+    border-radius: 9px;
+    overflow: hidden;
+}
+
+.status-main {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.status-toggle {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left-color: rgba(255, 255, 255, 0.45);
+    width: 38px;
+    padding: 0;
+    font-size: 0.95rem;
+}
+
+.status-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 0.35rem);
+    min-width: 180px;
+    background: #fff;
+    border: 1px solid #d4dde8;
+    border-radius: 10px;
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.12);
+    padding: 0.3rem;
+    display: grid;
+    gap: 0.2rem;
+    z-index: 30;
+}
+
+.status-option {
+    border: 1px solid transparent;
+    background: #fff;
+    color: #0f172a;
+    text-align: left;
+    border-radius: 8px;
+    padding: 0.45rem 0.55rem;
+    font: inherit;
+    cursor: pointer;
+}
+
+.status-option:hover {
+    background: #f0fdf4;
+    border-color: #c5e8d7;
 }
 
 .btn-success,
@@ -762,12 +1073,11 @@ onMounted(loadTicket);
 
 .workspace-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.8fr) minmax(340px, 1fr);
+    grid-template-columns: 1fr;
     gap: 0.9rem;
 }
 
-.conversation-card,
-.panel-card {
+.conversation-card {
     border: 1px solid #d8e1ed;
     border-radius: 14px;
     background: #fff;
@@ -827,45 +1137,82 @@ onMounted(loadTicket);
 .activity-stream {
     padding: 0.95rem 1rem;
     display: grid;
-    gap: 0.8rem;
+    gap: 1rem;
     align-content: start;
     max-height: 58vh;
     overflow: auto;
 }
 
+.activity-group {
+    display: grid;
+    gap: 0.55rem;
+}
+
+.activity-group-title {
+    margin: 0;
+    font-size: 1.15rem;
+    font-weight: 600;
+    color: #0f172a;
+}
+
+.activity-list {
+    position: relative;
+    display: grid;
+    gap: 0.35rem;
+}
+
+.activity-list::before {
+    content: '';
+    position: absolute;
+    left: 13px;
+    top: 4px;
+    bottom: 4px;
+    width: 1px;
+    background: #dbe4ee;
+}
+
 .activity-item {
     display: grid;
-    grid-template-columns: 18px minmax(0, 1fr);
+    grid-template-columns: 26px minmax(0, 1fr);
     gap: 0.65rem;
+    align-items: flex-start;
 }
 
-.activity-dot {
-    width: 18px;
-    height: 18px;
+.activity-marker {
+    width: 26px;
+    height: 26px;
     border-radius: 50%;
-    border: 2px solid #cbd5e1;
-    background: #fff;
-    margin-top: 0.15rem;
-}
-
-.activity-created { border-color: #0ea5e9; background: #e0f2fe; }
-.activity-status { border-color: #22c55e; background: #dcfce7; }
-.activity-assignment { border-color: #f59e0b; background: #fef3c7; }
-.activity-field { border-color: #a78bfa; background: #ede9fe; }
-.activity-default { border-color: #94a3b8; background: #f1f5f9; }
-
-.activity-body p {
-    margin: 0;
+    border: 1px solid #cbd5e1;
+    background: #f8fafc;
+    margin-top: 0.05rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.78rem;
+    font-weight: 700;
     color: #334155;
+    z-index: 1;
 }
 
-.activity-body span {
-    color: #64748b;
+.activity-created { border-color: #9ca3af; background: #f3f4f6; color: #4b5563; }
+.activity-status { border-color: #ef4444; background: #fee2e2; color: #b91c1c; }
+.activity-assignment { border-color: #0ea5e9; background: #e0f2fe; color: #0369a1; }
+.activity-meta { border-color: #14b8a6; background: #ccfbf1; color: #0f766e; }
+.activity-default { border-color: #94a3b8; background: #f1f5f9; color: #475569; }
+
+.activity-body {
+    display: grid;
+    padding-top: 0.1rem;
 }
 
-.activity-field {
-    margin-top: 0.28rem !important;
-    font-size: 0.86rem;
+.activity-line {
+    margin: 0;
+    color: #111827;
+    font-size: 0.89rem;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .task-content,
@@ -887,22 +1234,121 @@ onMounted(loadTicket);
     color: #475569;
 }
 
+.note-form {
+    border: 1px solid #cfd8e3;
+    border-radius: 16px;
+    background: #fff;
+    padding: 0.65rem 0.8rem;
+    position: relative;
+    width: min(920px, 100%);
+    margin: 0 auto;
+}
+
+.note-form textarea {
+    border: none;
+    min-height: 64px;
+    resize: vertical;
+    font: inherit;
+    color: #1e293b;
+    padding: 0.15rem 7.5rem 0.15rem 0.05rem;
+    line-height: 1.4;
+    width: 100%;
+}
+
+.note-form textarea:focus {
+    outline: none;
+}
+
+.btn-send-note {
+    position: absolute;
+    right: 0.75rem;
+    bottom: 0.65rem;
+    border-radius: 9px;
+    border: 1px solid #0f172a;
+    background: #0f172a;
+    color: #fff;
+    padding: 0.4rem 0.9rem;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.9rem;
+}
+
+.btn-send-note:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.notes-muted {
+    margin: 0;
+    color: #64748b;
+    font-size: 0.9rem;
+}
+
+.note-row {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 0.65rem;
+    padding: 0.45rem 0.1rem;
+    border-bottom: 1px solid #e8edf5;
+}
+
+.note-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    background: #1f2a44;
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    font-size: 0.82rem;
+}
+
 .note-item {
-    border: 1px solid #e5edf7;
-    border-radius: 10px;
-    padding: 0.65rem;
-    background: #fffbeb;
+    display: grid;
+    gap: 0.22rem;
+    align-content: start;
 }
 
 .note-head {
-    display: flex;
-    justify-content: space-between;
-    gap: 0.6rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.note-head strong {
+    font-size: 0.92rem;
+    color: #0f172a;
+}
+
+.note-head small {
+    color: #64748b;
+    font-size: 0.8rem;
 }
 
 .note-item p {
-    margin: 0.35rem 0 0;
+    margin: 0;
     white-space: pre-wrap;
+    color: #111827;
+    font-size: 0.9rem;
+    line-height: 1.35;
+}
+
+@media (max-width: 760px) {
+    .note-form {
+        padding: 0.6rem 0.65rem;
+    }
+
+    .note-form textarea {
+        min-height: 56px;
+        padding-right: 0.1rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .btn-send-note {
+        position: static;
+        justify-self: end;
+    }
 }
 
 .message-row {
@@ -1036,51 +1482,6 @@ onMounted(loadTicket);
     margin-top: 0;
 }
 
-.context-panel {
-    display: grid;
-    gap: 0.85rem;
-    align-content: start;
-}
-
-.panel-card {
-    padding: 0.75rem;
-    display: grid;
-    gap: 0.65rem;
-}
-
-.panel-card h2 {
-    margin: 0;
-    font-size: 0.96rem;
-}
-
-.kv-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.55rem;
-}
-
-.kv-grid div {
-    border: 1px solid #e4ebf5;
-    border-radius: 10px;
-    background: #fbfdff;
-    padding: 0.45rem 0.52rem;
-    display: grid;
-    gap: 0.18rem;
-}
-
-.kv-grid .full-row {
-    grid-column: 1 / -1;
-}
-
-.kv-grid span {
-    color: #64748b;
-    font-size: 0.78rem;
-}
-
-.kv-grid strong {
-    font-size: 0.9rem;
-}
-
 .stack {
     display: grid;
     gap: 0.46rem;
@@ -1101,52 +1502,7 @@ onMounted(loadTicket);
     font: inherit;
 }
 
-.badge {
-    display: inline-flex;
-    padding: 0.15rem 0.48rem;
-    border-radius: 999px;
-    font-size: 0.76rem;
-    border: 1px solid transparent;
-}
-
-.badge-open { color: #166534; background: #dcfce7; border-color: #bbf7d0; }
-.badge-in_progress { color: #1d4ed8; background: #dbeafe; border-color: #bfdbfe; }
-.badge-pending { color: #854d0e; background: #fef9c3; border-color: #fde68a; }
-.badge-closed { color: #166534; background: #dcfce7; border-color: #86efac; }
-.badge-cancelled { color: #7f1d1d; background: #fee2e2; border-color: #fecaca; }
-
-.log-list {
-    display: grid;
-    gap: 0.45rem;
-}
-
-.log-item {
-    border: 1px solid #e4ebf5;
-    border-radius: 10px;
-    background: #fbfdff;
-    padding: 0.5rem;
-    display: grid;
-    gap: 0.25rem;
-}
-
-.log-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.45rem;
-}
-
-.log-item p {
-    margin: 0;
-    color: #475569;
-    font-size: 0.84rem;
-}
-
 @media (max-width: 1200px) {
-    .workspace-grid {
-        grid-template-columns: 1fr;
-    }
-
     .message-stream {
         max-height: none;
     }
@@ -1154,12 +1510,22 @@ onMounted(loadTicket);
 
 @media (max-width: 640px) {
     .ticket-header {
-        flex-direction: column;
-        align-items: flex-start;
+        grid-template-columns: 1fr;
+        align-items: stretch;
     }
 
     .header-actions {
         width: 100%;
+        justify-self: stretch;
+    }
+
+    .header-center {
+        justify-self: stretch;
+        justify-content: center;
+    }
+
+    .ticket-title {
+        max-width: calc(100vw - 170px);
     }
 
     .btn-success,
@@ -1169,8 +1535,12 @@ onMounted(loadTicket);
         text-align: center;
     }
 
-    .kv-grid {
-        grid-template-columns: 1fr;
+    .status-split {
+        width: 100%;
+    }
+
+    .status-main {
+        flex: 1;
     }
 
     .btn-send {

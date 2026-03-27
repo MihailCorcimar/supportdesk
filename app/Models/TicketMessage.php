@@ -22,6 +22,7 @@ class TicketMessage extends Model
         'author_user_id',
         'author_contact_id',
         'body',
+        'body_format',
         'attachments',
         'is_internal',
     ];

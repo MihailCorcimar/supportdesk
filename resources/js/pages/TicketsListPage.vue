@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { onMounted, reactive, ref } from 'vue';
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import api from '../api/client';
 
@@ -10,22 +10,29 @@ const quickActionMessage = ref('');
 const searchInputRef = ref(null);
 const tickets = ref([]);
 const meta = ref({ current_page: 1, last_page: 1, total: 0 });
+const openActionsMenuTicketId = ref(null);
 const options = ref({
     inboxes: [],
     entities: [],
     operators: [],
     statuses: [],
+    priorities: [],
     types: [],
 });
 
-const filters = reactive({
+const defaultFilters = {
     search: '',
     inbox_id: '',
     status: '',
     assigned_operator_id: '',
     type: '',
+    priority: '',
     entity_id: '',
-});
+    sort_by: 'last_activity_at',
+    sort_dir: 'desc',
+};
+
+const filters = reactive({ ...defaultFilters });
 
 const statusLabels = {
     open: 'Aberto',
@@ -43,7 +50,7 @@ const priorityLabels = {
 };
 
 const typeLabels = {
-    question: 'Questao',
+    question: 'Questão',
     incident: 'Incidente',
     request: 'Pedido',
     task: 'Tarefa',
@@ -57,6 +64,7 @@ const loadMeta = async () => {
         entities: response.data.data.entities,
         operators: response.data.data.operators,
         statuses: response.data.data.statuses,
+        priorities: response.data.data.priorities ?? [],
         types: response.data.data.types,
     };
 };
@@ -77,21 +85,48 @@ const loadTickets = async (page = 1) => {
         tickets.value = response.data.data;
         meta.value = response.data.meta;
     } catch (exception) {
-        error.value = 'Nao foi possivel carregar tickets.';
+        error.value = 'Não foi possível carregar tickets.';
     } finally {
         loading.value = false;
     }
 };
 
+let searchDebounceTimer = null;
+
 const applyFilters = () => {
     loadTickets(1);
 };
 
+const applyFiltersDebounced = () => {
+    if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+    }
+
+    searchDebounceTimer = setTimeout(() => {
+        loadTickets(1);
+    }, 220);
+};
+
 const clearFilters = () => {
-    Object.keys(filters).forEach((key) => {
-        filters[key] = '';
-    });
+    Object.assign(filters, defaultFilters);
+    openActionsMenuTicketId.value = null;
     loadTickets(1);
+};
+
+const toggleSort = (field) => {
+    if (filters.sort_by === field) {
+        filters.sort_dir = filters.sort_dir === 'asc' ? 'desc' : 'asc';
+    } else {
+        filters.sort_by = field;
+        filters.sort_dir = field === 'ticket_number' ? 'asc' : 'desc';
+    }
+
+    loadTickets(1);
+};
+
+const sortState = (field) => {
+    if (filters.sort_by !== field) return 'none';
+    return filters.sort_dir === 'asc' ? 'asc' : 'desc';
 };
 
 const focusSearch = () => {
@@ -101,7 +136,41 @@ const focusSearch = () => {
 };
 
 const refreshCurrentPage = () => {
+    openActionsMenuTicketId.value = null;
     loadTickets(meta.value.current_page || 1);
+};
+
+const toggleActionsMenu = (ticketId) => {
+    openActionsMenuTicketId.value = openActionsMenuTicketId.value === ticketId ? null : ticketId;
+};
+
+const closeActionsMenu = () => {
+    openActionsMenuTicketId.value = null;
+};
+
+const openTicketView = async (ticketId, tab = 'conversation') => {
+    closeActionsMenu();
+    await router.push({
+        name: 'tickets.show',
+        params: { id: ticketId },
+        query: { tab },
+    });
+};
+
+const openTicketEditor = async (ticketId) => {
+    closeActionsMenu();
+    await router.push({ name: 'tickets.edit', params: { id: ticketId } });
+};
+
+const closeActionsMenuOnOutsideClick = (event) => {
+    if (openActionsMenuTicketId.value === null) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (!target.closest('.actions-menu')) {
+        closeActionsMenu();
+    }
 };
 
 const goToFirstTicket = async () => {
@@ -135,8 +204,13 @@ const formatDate = (value) => {
 const clientLabel = (ticket) => ticket.contact?.name ?? ticket.entity?.name ?? '-';
 
 onMounted(async () => {
+    document.addEventListener('click', closeActionsMenuOnOutsideClick);
     await loadMeta();
     await loadTickets(1);
+});
+
+onBeforeUnmount(() => {
+    document.removeEventListener('click', closeActionsMenuOnOutsideClick);
 });
 </script>
 
@@ -150,19 +224,20 @@ onMounted(async () => {
                 </div>
 
                 <div class="header-actions">
-                    <button type="button" class="btn-ghost" disabled>Focus mode</button>
                     <RouterLink class="btn-primary" :to="{ name: 'tickets.create' }">Novo Ticket</RouterLink>
                 </div>
             </header>
 
-            <form class="filter-bar" @submit.prevent="applyFilters">
-                <label class="search-input">
-                    <input ref="searchInputRef" v-model="filters.search" placeholder="Search" />
+            <form class="filter-bar" @submit.prevent>
+                <label class="search-field">
+                    <span class="field-icon">⌕</span>
+                    <input ref="searchInputRef" v-model="filters.search" placeholder="Pesquisar" @input="applyFiltersDebounced" />
                 </label>
 
-                <label>
-                    Tipo
-                    <select v-model="filters.type">
+                <label class="inline-field">
+                    <span class="field-icon">⌁</span>
+                    <span class="ddl-name">Tipo</span>
+                    <select v-model="filters.type" @change="applyFilters">
                         <option value="">Todos</option>
                         <option v-for="type in options.types" :key="type" :value="type">
                             {{ typeLabels[type] ?? type }}
@@ -170,9 +245,10 @@ onMounted(async () => {
                     </select>
                 </label>
 
-                <label>
-                    Origem
-                    <select v-model="filters.inbox_id">
+                <label class="inline-field">
+                    <span class="field-icon">⌂</span>
+                    <span class="ddl-name">Origem</span>
+                    <select v-model="filters.inbox_id" @change="applyFilters">
                         <option value="">Todas</option>
                         <option v-for="inbox in options.inboxes" :key="inbox.id" :value="String(inbox.id)">
                             {{ inbox.name }}
@@ -180,9 +256,10 @@ onMounted(async () => {
                     </select>
                 </label>
 
-                <label>
-                    Estado
-                    <select v-model="filters.status">
+                <label class="inline-field">
+                    <span class="field-icon">◍</span>
+                    <span class="ddl-name">Estado</span>
+                    <select v-model="filters.status" @change="applyFilters">
                         <option value="">Todos</option>
                         <option v-for="status in options.statuses" :key="status" :value="status">
                             {{ statusLabels[status] ?? status }}
@@ -190,9 +267,21 @@ onMounted(async () => {
                     </select>
                 </label>
 
-                <label>
-                    Entidade
-                    <select v-model="filters.entity_id">
+                <label class="inline-field">
+                    <span class="field-icon">⚑</span>
+                    <span class="ddl-name">Prioridade</span>
+                    <select v-model="filters.priority" @change="applyFilters">
+                        <option value="">Todas</option>
+                        <option v-for="priority in options.priorities" :key="priority" :value="priority">
+                            {{ priorityLabels[priority] ?? priority }}
+                        </option>
+                    </select>
+                </label>
+
+                <label class="inline-field">
+                    <span class="field-icon">⌘</span>
+                    <span class="ddl-name">Entidade</span>
+                    <select v-model="filters.entity_id" @change="applyFilters">
                         <option value="">Todas</option>
                         <option v-for="entity in options.entities" :key="entity.id" :value="String(entity.id)">
                             {{ entity.name }}
@@ -201,7 +290,6 @@ onMounted(async () => {
                 </label>
 
                 <div class="filter-actions">
-                    <button type="submit" class="btn-ghost">Aplicar filtros</button>
                     <button type="button" class="btn-clean" @click="clearFilters">Limpar</button>
                 </div>
             </form>
@@ -214,13 +302,42 @@ onMounted(async () => {
                     <thead>
                         <tr>
                             <th class="check-col"><input type="checkbox" disabled /></th>
-                            <th>Ticket ID</th>
-                            <th>Assunto</th>
-                            <th>Prioridade</th>
-                            <th>Tipo</th>
-                            <th>Cliente</th>
-                            <th>Data pedido</th>
-                            <th class="actions-col"></th>
+                            <th>
+                                <button type="button" class="sort-btn" @click="toggleSort('ticket_number')">
+                                    Ticket ID <span class="sort-indicator" :class="`is-${sortState('ticket_number')}`"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="sort-btn" @click="toggleSort('subject')">
+                                    Assunto <span class="sort-indicator" :class="`is-${sortState('subject')}`"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="sort-btn" @click="toggleSort('priority')">
+                                    Prioridade <span class="sort-indicator" :class="`is-${sortState('priority')}`"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="sort-btn" @click="toggleSort('status')">
+                                    Estado <span class="sort-indicator" :class="`is-${sortState('status')}`"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="sort-btn" @click="toggleSort('type')">
+                                    Tipo <span class="sort-indicator" :class="`is-${sortState('type')}`"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="sort-btn" @click="toggleSort('client')">
+                                    Entidade <span class="sort-indicator" :class="`is-${sortState('client')}`"></span>
+                                </button>
+                            </th>
+                            <th>
+                                <button type="button" class="sort-btn" @click="toggleSort('request_date')">
+                                    Data pedido <span class="sort-indicator" :class="`is-${sortState('request_date')}`"></span>
+                                </button>
+                            </th>
+                            <th class="actions-col">Ações</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -242,16 +359,50 @@ onMounted(async () => {
                                 </span>
                             </td>
                             <td>
+                                <span class="status-pill" :class="`status-${ticket.status}`">
+                                    {{ statusLabels[ticket.status] ?? ticket.status }}
+                                </span>
+                            </td>
+                            <td>
                                 <span class="type-pill">{{ typeLabels[ticket.type] ?? ticket.type }}</span>
                             </td>
                             <td>{{ clientLabel(ticket) }}</td>
-                            <td>{{ formatDate(ticket.last_activity_at) }}</td>
+                            <td>{{ formatDate(ticket.created_at ?? ticket.last_activity_at) }}</td>
                             <td class="actions-col">
-                                <RouterLink class="row-action" :to="{ name: 'tickets.show', params: { id: ticket.id } }">...</RouterLink>
+                                <div class="actions-menu">
+                                    <button
+                                        type="button"
+                                        class="btn-clean row-action menu-trigger"
+                                        aria-label="Abrir ações"
+                                        @click.stop="toggleActionsMenu(ticket.id)"
+                                    >
+                                        ⋯
+                                    </button>
+                                    <div v-if="openActionsMenuTicketId === ticket.id" class="actions-dropdown" @click.stop>
+                                        <button type="button" class="menu-item" @click="openTicketView(ticket.id, 'conversation')">
+                                            Abrir ticket
+                                        </button>
+                                        <button type="button" class="menu-item" @click="openTicketView(ticket.id, 'conversation')">
+                                            Conversação
+                                        </button>
+                                        <button type="button" class="menu-item" @click="openTicketView(ticket.id, 'task')">
+                                            Task
+                                        </button>
+                                        <button type="button" class="menu-item" @click="openTicketView(ticket.id, 'activity_logs')">
+                                            Activity Logs
+                                        </button>
+                                        <button type="button" class="menu-item" @click="openTicketView(ticket.id, 'notes')">
+                                            Notas
+                                        </button>
+                                        <button type="button" class="menu-item" @click="openTicketEditor(ticket.id)">
+                                            Editar
+                                        </button>
+                                    </div>
+                                </div>
                             </td>
                         </tr>
                         <tr v-if="!tickets.length">
-                            <td colspan="8" class="empty-row">Sem tickets para os filtros escolhidos.</td>
+                            <td colspan="9" class="empty-row">Sem tickets para os filtros escolhidos.</td>
                         </tr>
                     </tbody>
                 </table>
@@ -265,7 +416,7 @@ onMounted(async () => {
                 >
                     Anterior
                 </button>
-                <span>Pagina {{ meta.current_page }} de {{ meta.last_page }}</span>
+                <span>Página {{ meta.current_page }} de {{ meta.last_page }}</span>
                 <button
                     class="btn-clean"
                     :disabled="meta.current_page >= meta.last_page"
@@ -281,11 +432,6 @@ onMounted(async () => {
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                     <circle cx="11" cy="11" r="6.2" stroke="currentColor" stroke-width="1.8" />
                     <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-                </svg>
-            </button>
-            <button type="button" title="Aplicar filtros" @click="applyFilters">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
                 </svg>
             </button>
             <button type="button" title="Limpar filtros" @click="clearFilters">
@@ -383,33 +529,78 @@ h1 {
 
 .filter-bar {
     display: grid;
-    grid-template-columns: 1.4fr repeat(4, minmax(120px, 1fr)) auto;
+    grid-template-columns: 1.6fr repeat(5, minmax(120px, 1fr)) auto;
     gap: 0.55rem;
-    align-items: end;
+    align-items: center;
     padding: 0.75rem 1rem;
     border-bottom: 1px solid #e3ebf5;
     background: #fbfdff;
 }
 
-.search-input input {
-    padding-left: 0.7rem;
+.search-field {
+    border: 1px solid #dbe4ee;
+    border-radius: 9px;
+    background: #fff;
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0 0.5rem;
 }
 
-label {
-    display: grid;
-    gap: 0.22rem;
+.inline-field {
+    position: relative;
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0 0.2rem;
+}
+
+.field-icon {
     color: #64748b;
-    font-size: 0.78rem;
+    font-size: 1.22rem;
+    width: 26px;
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    font-weight: 600;
+}
+
+.ddl-name {
+    color: #475569;
+    font-size: 0.82rem;
+    white-space: nowrap;
 }
 
 input,
 select {
-    border: 1px solid #dbe4ee;
-    border-radius: 8px;
-    padding: 0.46rem 0.58rem;
+    border: none;
+    border-radius: 0;
+    padding: 0.46rem 0.1rem;
     font: inherit;
     color: #0f172a;
     background: #fff;
+    width: 100%;
+}
+
+input:focus,
+select:focus {
+    outline: none;
+}
+
+.inline-field select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: none;
+    opacity: 0;
+    cursor: pointer;
 }
 
 .filter-actions {
@@ -444,13 +635,69 @@ select {
     background: #fff;
 }
 
+.sort-btn {
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    overflow: visible;
+}
+
+.sort-indicator {
+    display: inline-flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 1px;
+    width: 9px;
+    margin-left: 0.08rem;
+}
+
+.sort-indicator::before,
+.sort-indicator::after {
+    content: '';
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+}
+
+.sort-indicator::before {
+    border-bottom: 5px solid #94a3b8;
+}
+
+.sort-indicator::after {
+    border-top: 5px solid #94a3b8;
+}
+
+.sort-indicator.is-asc::before {
+    border-bottom-color: #334155;
+}
+
+.sort-indicator.is-asc::after {
+    border-top-color: #cbd5e1;
+}
+
+.sort-indicator.is-desc::before {
+    border-bottom-color: #cbd5e1;
+}
+
+.sort-indicator.is-desc::after {
+    border-top-color: #334155;
+}
+
 .check-col {
     width: 38px;
     text-align: center;
 }
 
 .actions-col {
-    width: 42px;
+    width: 82px;
     text-align: center;
 }
 
@@ -475,6 +722,7 @@ select {
 }
 
 .priority-pill,
+.status-pill,
 .type-pill {
     display: inline-flex;
     align-items: center;
@@ -489,6 +737,12 @@ select {
 .priority-high { color: #991b1b; background: #fee2e2; border-color: #fecaca; }
 .priority-urgent { color: #7f1d1d; background: #fee2e2; border-color: #fca5a5; }
 
+.status-open { color: #166534; background: #dcfce7; border-color: #86efac; }
+.status-in_progress { color: #1d4ed8; background: #dbeafe; border-color: #93c5fd; }
+.status-pending { color: #854d0e; background: #fef3c7; border-color: #fcd34d; }
+.status-closed { color: #065f46; background: #d1fae5; border-color: #6ee7b7; }
+.status-cancelled { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+
 .type-pill {
     color: #334155;
     background: #f1f5f9;
@@ -499,6 +753,54 @@ select {
     color: #64748b;
     text-decoration: none;
     font-weight: 700;
+    padding: 0.2rem 0.42rem;
+}
+
+.actions-menu {
+    position: relative;
+    display: inline-flex;
+}
+
+.menu-trigger {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 999px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    line-height: 1;
+}
+
+.actions-dropdown {
+    position: absolute;
+    top: calc(100% + 0.3rem);
+    right: 0;
+    z-index: 30;
+    min-width: 168px;
+    border: 1px solid #dbe4ee;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.18);
+    padding: 0.32rem;
+    display: grid;
+    gap: 0.32rem;
+}
+
+.menu-item {
+    width: 100%;
+    border: 1px solid #cbd5e1;
+    background: #fff;
+    color: #0f172a;
+    border-radius: 8px;
+    text-align: left;
+    padding: 0.42rem 0.56rem;
+    cursor: pointer;
+}
+
+.menu-item:hover {
+    background: #f1f5f9;
 }
 
 .empty-row {
@@ -539,8 +841,8 @@ select {
 }
 
 .quick-actions button {
-    width: 40px;
-    height: 40px;
+    width: 46px;
+    height: 46px;
     border-radius: 999px;
     border: 1px solid #d9e2ee;
     background: #f8fafc;
@@ -558,8 +860,8 @@ select {
 }
 
 .quick-actions svg {
-    width: 18px;
-    height: 18px;
+    width: 22px;
+    height: 22px;
 }
 
 .quick-message {
@@ -578,7 +880,7 @@ select {
 
 @media (max-width: 1280px) {
     .filter-bar {
-        grid-template-columns: 1fr 1fr 1fr;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .filter-actions {

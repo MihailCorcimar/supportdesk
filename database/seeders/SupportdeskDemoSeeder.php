@@ -101,6 +101,7 @@ class SupportdeskDemoSeeder extends Seeder
                 'inbox_id' => $inboxes->first()->id,
                 'entity_id' => $entity->id,
                 'contact_id' => $contact->id,
+                'creator_contact_id' => $contact->id,
                 'created_by_user_id' => $client->id,
                 'assigned_operator_id' => $operator->id,
                 'subject' => 'Pedido inicial de demonstracao',

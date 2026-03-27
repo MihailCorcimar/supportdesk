@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import api from '../api/client';
 
@@ -36,7 +36,33 @@ const entityForm = reactive({
     notes: '',
     is_active: true,
 });
+const entityEditForm = reactive({
+    type: 'external',
+    name: '',
+    tax_number: '',
+    email: '',
+    phone: '',
+    mobile_phone: '',
+    website: '',
+    address_line: '',
+    postal_code: '',
+    city: '',
+    country: 'PT',
+    notes: '',
+    is_active: true,
+});
 const contactForm = reactive({
+    entity_ids: [],
+    function_id: '',
+    user_id: '',
+    name: '',
+    email: '',
+    phone: '',
+    mobile_phone: '',
+    internal_notes: '',
+    is_active: true,
+});
+const contactEditForm = reactive({
     entity_ids: [],
     function_id: '',
     user_id: '',
@@ -52,14 +78,95 @@ const logFilters = reactive({ search: '', action: '', actor_type: '' });
 const editingInboxId = ref(null);
 const editingEntityId = ref(null);
 const editingContactId = ref(null);
+const showEntityCreateModal = ref(false);
+const showEntityEditModal = ref(false);
+const showContactCreateModal = ref(false);
+const showContactEditModal = ref(false);
+const contactEntitySearch = ref('');
+const contactEntityDropdownOpen = ref(false);
+const contactEditEntitySearch = ref('');
+const contactEditEntityDropdownOpen = ref(false);
+const entityActionsMenuOpenId = ref(null);
+const contactActionsMenuOpenId = ref(null);
 
 const userOptions = computed(() => users.value.filter((user) => user.role === 'client'));
+const usedClientUserIds = computed(() => {
+    const ids = contacts.value
+        .map((contact) => Number(contact.user_id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+
+    return new Set(ids);
+});
+const availableClientUsers = computed(() => {
+    return userOptions.value.filter((user) => !usedClientUserIds.value.has(Number(user.id)));
+});
+const filteredEntitiesForContact = computed(() => {
+    const term = contactEntitySearch.value.trim().toLowerCase();
+
+    if (!term) {
+        return entities.value;
+    }
+
+    return entities.value.filter((entity) => {
+        const name = String(entity.name || '').toLowerCase();
+        const tax = String(entity.tax_number || '').toLowerCase();
+        return name.includes(term) || tax.includes(term);
+    });
+});
+const selectedContactEntities = computed(() => {
+    const selected = new Set((contactForm.entity_ids || []).map((id) => Number(id)));
+    return entities.value.filter((entity) => selected.has(Number(entity.id)));
+});
+const selectedContactEntityIds = computed(() => new Set((contactForm.entity_ids || []).map((id) => Number(id))));
+const contactEntityDropdownLabel = computed(() => {
+    if (!selectedContactEntities.value.length) {
+        return 'Selecionar entidades relacionadas';
+    }
+
+    if (selectedContactEntities.value.length === 1) {
+        return selectedContactEntities.value[0].name;
+    }
+
+    return `${selectedContactEntities.value.length} entidades selecionadas`;
+});
+const isContactEntitySelected = (entityId) => selectedContactEntityIds.value.has(Number(entityId));
+const filteredEntitiesForContactEdit = computed(() => {
+    const term = contactEditEntitySearch.value.trim().toLowerCase();
+
+    if (!term) {
+        return entities.value;
+    }
+
+    return entities.value.filter((entity) => {
+        const name = String(entity.name || '').toLowerCase();
+        const tax = String(entity.tax_number || '').toLowerCase();
+        return name.includes(term) || tax.includes(term);
+    });
+});
+const selectedContactEditEntities = computed(() => {
+    const selected = new Set((contactEditForm.entity_ids || []).map((id) => Number(id)));
+    return entities.value.filter((entity) => selected.has(Number(entity.id)));
+});
+const selectedContactEditEntityIds = computed(() => new Set((contactEditForm.entity_ids || []).map((id) => Number(id))));
+const contactEditEntityDropdownLabel = computed(() => {
+    if (!selectedContactEditEntities.value.length) {
+        return 'Selecionar entidades relacionadas';
+    }
+
+    if (selectedContactEditEntities.value.length === 1) {
+        return selectedContactEditEntities.value[0].name;
+    }
+
+    return `${selectedContactEditEntities.value.length} entidades selecionadas`;
+});
+const isContactEditEntitySelected = (entityId) => selectedContactEditEntityIds.value.has(Number(entityId));
 const tabLabel = {
     inboxes: 'Inboxes',
     entities: 'Entidades',
     contacts: 'Contactos',
     logs: 'Ticket logs',
 };
+let logSearchDebounceTimer = null;
 
 const loadBaseData = async () => {
     const [inboxesResponse, entitiesResponse, contactsResponse, usersResponse] = await Promise.all([
@@ -120,6 +227,138 @@ const toggleContactEntity = (target, entityId) => {
     target.entity_ids = [...target.entity_ids, normalizedId];
 };
 
+const syncContactFormFromSelectedUser = () => {
+    if (!contactForm.user_id) {
+        return;
+    }
+
+    const selectedUser = userOptions.value.find((user) => Number(user.id) === Number(contactForm.user_id));
+    if (!selectedUser) {
+        return;
+    }
+
+    contactForm.name = selectedUser.name ?? '';
+    contactForm.email = selectedUser.email ?? '';
+};
+
+const syncContactEditFormFromSelectedUser = () => {
+    if (!contactEditForm.user_id) {
+        return;
+    }
+
+    const selectedUser = userOptions.value.find((user) => Number(user.id) === Number(contactEditForm.user_id));
+    if (!selectedUser) {
+        return;
+    }
+
+    contactEditForm.name = selectedUser.name ?? '';
+    contactEditForm.email = selectedUser.email ?? '';
+};
+
+const resetContactForm = () => {
+    contactForm.entity_ids = [];
+    contactForm.function_id = '';
+    contactForm.user_id = '';
+    contactForm.name = '';
+    contactForm.email = '';
+    contactForm.phone = '';
+    contactForm.mobile_phone = '';
+    contactForm.internal_notes = '';
+    contactForm.is_active = true;
+    contactEntitySearch.value = '';
+    contactEntityDropdownOpen.value = false;
+};
+
+const resetContactEditForm = () => {
+    contactEditForm.entity_ids = [];
+    contactEditForm.function_id = '';
+    contactEditForm.user_id = '';
+    contactEditForm.name = '';
+    contactEditForm.email = '';
+    contactEditForm.phone = '';
+    contactEditForm.mobile_phone = '';
+    contactEditForm.internal_notes = '';
+    contactEditForm.is_active = true;
+    contactEditEntitySearch.value = '';
+    contactEditEntityDropdownOpen.value = false;
+};
+
+const clearContactEntitySelection = () => {
+    contactForm.entity_ids = [];
+};
+
+const clearContactEditEntitySelection = () => {
+    contactEditForm.entity_ids = [];
+};
+
+const toggleContactEntityDropdown = () => {
+    contactEntityDropdownOpen.value = !contactEntityDropdownOpen.value;
+};
+
+const toggleContactEditEntityDropdown = () => {
+    contactEditEntityDropdownOpen.value = !contactEditEntityDropdownOpen.value;
+};
+
+const closeContactEntityDropdownOnOutsideClick = (event) => {
+    if (!contactEntityDropdownOpen.value) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (!target.closest('.entity-ddl')) {
+        contactEntityDropdownOpen.value = false;
+    }
+};
+
+const closeContactEditEntityDropdownOnOutsideClick = (event) => {
+    if (!contactEditEntityDropdownOpen.value) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (!target.closest('.entity-ddl')) {
+        contactEditEntityDropdownOpen.value = false;
+    }
+};
+
+const toggleEntityActionsMenu = (entityId) => {
+    entityActionsMenuOpenId.value = entityActionsMenuOpenId.value === entityId ? null : entityId;
+};
+
+const toggleContactActionsMenu = (contactId) => {
+    contactActionsMenuOpenId.value = contactActionsMenuOpenId.value === contactId ? null : contactId;
+};
+
+const closeContactActionsMenu = () => {
+    contactActionsMenuOpenId.value = null;
+};
+
+const closeEntityActionsMenu = () => {
+    entityActionsMenuOpenId.value = null;
+};
+
+const closeEntityActionsMenuOnOutsideClick = (event) => {
+    if (entityActionsMenuOpenId.value === null) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (!target.closest('.entity-actions-menu')) {
+        closeEntityActionsMenu();
+    }
+};
+
+const closeContactActionsMenuOnOutsideClick = (event) => {
+    if (contactActionsMenuOpenId.value === null) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (!target.closest('.contact-actions-menu')) {
+        closeContactActionsMenu();
+    }
+};
+
 const createInbox = async () => {
     resetMessages();
 
@@ -164,52 +403,148 @@ const deleteInbox = async (inbox) => {
     }
 };
 
+const resetEntityForm = () => {
+    entityForm.type = 'external';
+    entityForm.name = '';
+    entityForm.tax_number = '';
+    entityForm.email = '';
+    entityForm.phone = '';
+    entityForm.mobile_phone = '';
+    entityForm.website = '';
+    entityForm.address_line = '';
+    entityForm.postal_code = '';
+    entityForm.city = '';
+    entityForm.country = 'PT';
+    entityForm.notes = '';
+    entityForm.is_active = true;
+};
+
+const resetEntityEditForm = () => {
+    entityEditForm.type = 'external';
+    entityEditForm.name = '';
+    entityEditForm.tax_number = '';
+    entityEditForm.email = '';
+    entityEditForm.phone = '';
+    entityEditForm.mobile_phone = '';
+    entityEditForm.website = '';
+    entityEditForm.address_line = '';
+    entityEditForm.postal_code = '';
+    entityEditForm.city = '';
+    entityEditForm.country = 'PT';
+    entityEditForm.notes = '';
+    entityEditForm.is_active = true;
+};
+
+const openEntityCreateModal = () => {
+    resetMessages();
+    resetEntityForm();
+    showEntityCreateModal.value = true;
+};
+
+const closeEntityCreateModal = () => {
+    showEntityCreateModal.value = false;
+};
+
+const openEntityEditModal = (entity) => {
+    resetMessages();
+    closeEntityActionsMenu();
+    editingEntityId.value = entity.id;
+    entityEditForm.type = entity.type ?? 'external';
+    entityEditForm.name = entity.name ?? '';
+    entityEditForm.tax_number = entity.tax_number ?? '';
+    entityEditForm.email = entity.email ?? '';
+    entityEditForm.phone = entity.phone ?? '';
+    entityEditForm.mobile_phone = entity.mobile_phone ?? '';
+    entityEditForm.website = entity.website ?? '';
+    entityEditForm.address_line = entity.address_line ?? '';
+    entityEditForm.postal_code = entity.postal_code ?? '';
+    entityEditForm.city = entity.city ?? '';
+    entityEditForm.country = entity.country ?? 'PT';
+    entityEditForm.notes = entity.notes ?? '';
+    entityEditForm.is_active = Boolean(entity.is_active);
+    showEntityEditModal.value = true;
+};
+
+const closeEntityEditModal = () => {
+    showEntityEditModal.value = false;
+    editingEntityId.value = null;
+    resetEntityEditForm();
+};
+
+const openContactCreateModal = () => {
+    resetMessages();
+    resetContactForm();
+    contactEntityDropdownOpen.value = false;
+    showContactCreateModal.value = true;
+};
+
+const closeContactCreateModal = () => {
+    contactEntityDropdownOpen.value = false;
+    showContactCreateModal.value = false;
+};
+
+const openContactEditModal = (contact) => {
+    resetMessages();
+    closeContactActionsMenu();
+    editingContactId.value = contact.id;
+    contactEditForm.entity_ids = (contact.entity_ids || []).map((id) => Number(id));
+    contactEditForm.function_id = contact.function_id ? String(contact.function_id) : '';
+    contactEditForm.user_id = contact.user_id ? String(contact.user_id) : '';
+    contactEditForm.name = contact.name ?? '';
+    contactEditForm.email = contact.email ?? '';
+    contactEditForm.phone = contact.phone ?? '';
+    contactEditForm.mobile_phone = contact.mobile_phone ?? '';
+    contactEditForm.internal_notes = contact.internal_notes ?? '';
+    contactEditForm.is_active = Boolean(contact.is_active);
+    contactEditEntitySearch.value = '';
+    contactEditEntityDropdownOpen.value = false;
+    showContactEditModal.value = true;
+};
+
+const closeContactEditModal = () => {
+    showContactEditModal.value = false;
+    editingContactId.value = null;
+    resetContactEditForm();
+};
+
 const createEntity = async () => {
     resetMessages();
 
     try {
         await api.post('/entities', entityForm);
         success.value = 'Entidade criada com sucesso.';
-        entityForm.type = 'external';
-        entityForm.name = '';
-        entityForm.tax_number = '';
-        entityForm.email = '';
-        entityForm.phone = '';
-        entityForm.mobile_phone = '';
-        entityForm.website = '';
-        entityForm.address_line = '';
-        entityForm.postal_code = '';
-        entityForm.city = '';
-        entityForm.country = 'PT';
-        entityForm.notes = '';
-        entityForm.is_active = true;
+        resetEntityForm();
+        showEntityCreateModal.value = false;
         await loadBaseData();
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao criar entidade.';
     }
 };
 
-const saveEntity = async (entity) => {
+const saveEntity = async () => {
+    if (!editingEntityId.value) return;
+
     resetMessages();
+    closeEntityActionsMenu();
 
     try {
-        await api.patch(`/entities/${entity.id}`, {
-            type: entity.type,
-            name: entity.name,
-            tax_number: entity.tax_number,
-            email: entity.email,
-            phone: entity.phone,
-            mobile_phone: entity.mobile_phone,
-            website: entity.website,
-            address_line: entity.address_line,
-            postal_code: entity.postal_code,
-            city: entity.city,
-            country: entity.country,
-            notes: entity.notes,
-            is_active: entity.is_active,
+        await api.patch(`/entities/${editingEntityId.value}`, {
+            type: entityEditForm.type,
+            name: entityEditForm.name,
+            tax_number: entityEditForm.tax_number,
+            email: entityEditForm.email,
+            phone: entityEditForm.phone,
+            mobile_phone: entityEditForm.mobile_phone,
+            website: entityEditForm.website,
+            address_line: entityEditForm.address_line,
+            postal_code: entityEditForm.postal_code,
+            city: entityEditForm.city,
+            country: entityEditForm.country,
+            notes: entityEditForm.notes,
+            is_active: entityEditForm.is_active,
         });
         success.value = 'Entidade atualizada.';
-        editingEntityId.value = null;
+        closeEntityEditModal();
         await loadBaseData();
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao atualizar entidade.';
@@ -220,6 +555,7 @@ const deleteEntity = async (entity) => {
     if (!window.confirm(`Eliminar entidade ${entity.name}?`)) return;
 
     resetMessages();
+    closeEntityActionsMenu();
 
     try {
         await api.delete(`/entities/${entity.id}`);
@@ -246,38 +582,34 @@ const createContact = async () => {
             is_active: contactForm.is_active,
         });
         success.value = 'Contacto criado com sucesso.';
-        contactForm.entity_ids = [];
-        contactForm.function_id = '';
-        contactForm.user_id = '';
-        contactForm.name = '';
-        contactForm.email = '';
-        contactForm.phone = '';
-        contactForm.mobile_phone = '';
-        contactForm.internal_notes = '';
-        contactForm.is_active = true;
+        resetContactForm();
+        showContactCreateModal.value = false;
         await loadBaseData();
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao criar contacto.';
     }
 };
 
-const saveContact = async (contact) => {
+const saveContact = async () => {
+    if (!editingContactId.value) return;
+
     resetMessages();
+    closeContactActionsMenu();
 
     try {
-        await api.patch(`/contacts/${contact.id}`, {
-            entity_ids: (contact.entity_ids || []).map((id) => Number(id)),
-            function_id: contact.function_id ? Number(contact.function_id) : null,
-            user_id: contact.user_id ? Number(contact.user_id) : null,
-            name: contact.name,
-            email: contact.email,
-            phone: contact.phone,
-            mobile_phone: contact.mobile_phone,
-            internal_notes: contact.internal_notes,
-            is_active: contact.is_active,
+        await api.patch(`/contacts/${editingContactId.value}`, {
+            entity_ids: (contactEditForm.entity_ids || []).map((id) => Number(id)),
+            function_id: contactEditForm.function_id ? Number(contactEditForm.function_id) : null,
+            user_id: contactEditForm.user_id ? Number(contactEditForm.user_id) : null,
+            name: contactEditForm.name,
+            email: contactEditForm.email,
+            phone: contactEditForm.phone || null,
+            mobile_phone: contactEditForm.mobile_phone || null,
+            internal_notes: contactEditForm.internal_notes || null,
+            is_active: contactEditForm.is_active,
         });
         success.value = 'Contacto atualizado.';
-        editingContactId.value = null;
+        closeContactEditModal();
         await loadBaseData();
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao atualizar contacto.';
@@ -288,6 +620,7 @@ const deleteContact = async (contact) => {
     if (!window.confirm(`Eliminar contacto ${contact.name}?`)) return;
 
     resetMessages();
+    closeContactActionsMenu();
 
     try {
         await api.delete(`/contacts/${contact.id}`);
@@ -307,6 +640,23 @@ const refreshLogs = async () => {
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao carregar logs.';
     }
+};
+
+const applyLogFiltersInstantly = () => {
+    if (logSearchDebounceTimer) {
+        clearTimeout(logSearchDebounceTimer);
+    }
+
+    logSearchDebounceTimer = setTimeout(() => {
+        loadLogs();
+    }, 240);
+};
+
+const applyLogFiltersImmediately = () => {
+    if (logSearchDebounceTimer) {
+        clearTimeout(logSearchDebounceTimer);
+    }
+    loadLogs();
 };
 
 const formatDate = (value) => {
@@ -339,6 +689,21 @@ watch(activeTab, (tab) => {
 });
 
 onMounted(loadAll);
+onMounted(() => {
+    document.addEventListener('click', closeContactEntityDropdownOnOutsideClick);
+    document.addEventListener('click', closeContactEditEntityDropdownOnOutsideClick);
+    document.addEventListener('click', closeEntityActionsMenuOnOutsideClick);
+    document.addEventListener('click', closeContactActionsMenuOnOutsideClick);
+});
+onBeforeUnmount(() => {
+    document.removeEventListener('click', closeContactEntityDropdownOnOutsideClick);
+    document.removeEventListener('click', closeContactEditEntityDropdownOnOutsideClick);
+    document.removeEventListener('click', closeEntityActionsMenuOnOutsideClick);
+    document.removeEventListener('click', closeContactActionsMenuOnOutsideClick);
+    if (logSearchDebounceTimer) {
+        clearTimeout(logSearchDebounceTimer);
+    }
+});
 </script>
 
 <template>
@@ -348,7 +713,6 @@ onMounted(loadAll);
                 <h1>Configuracao operacional</h1>
                 <p class="muted">CRUD de inboxes, entidades, contactos e consulta dedicada de ticket logs.</p>
             </div>
-            <button class="btn-secondary" @click="loadAll">Atualizar</button>
         </header>
 
         <p v-if="error" class="error">{{ error }}</p>
@@ -406,113 +770,390 @@ onMounted(loadAll);
 
             <template v-if="!loading && activeTab === 'entities'">
                 <h2>Entidades</h2>
-                <form class="form-grid" @submit.prevent="createEntity">
-                    <label>Tipo
-                        <select v-model="entityForm.type">
-                            <option value="external">Externa</option>
-                            <option value="internal">Interna</option>
-                        </select>
-                    </label>
-                    <label>Nome <input v-model="entityForm.name" required /></label>
-                    <label>NIF <input v-model="entityForm.tax_number" /></label>
-                    <label>Email <input v-model="entityForm.email" type="email" /></label>
-                    <label>Telefone <input v-model="entityForm.phone" /></label>
-                    <label>Telemovel <input v-model="entityForm.mobile_phone" /></label>
-                    <label>Website <input v-model="entityForm.website" type="url" placeholder="https://..." /></label>
-                    <label>Morada <input v-model="entityForm.address_line" /></label>
-                    <label>Codigo postal <input v-model="entityForm.postal_code" maxlength="20" /></label>
-                    <label>Cidade <input v-model="entityForm.city" /></label>
-                    <label>Pais (2 letras) <input v-model="entityForm.country" maxlength="2" /></label>
-                    <label class="checkbox"><input v-model="entityForm.is_active" type="checkbox" />Ativa</label>
-                    <label class="full">Notas internas <textarea v-model="entityForm.notes" rows="2"></textarea></label>
-                    <button type="submit" class="full">Criar entidade</button>
-                </form>
+                <div class="section-actions">
+                    <button type="button" class="btn-inline" @click="openEntityCreateModal">
+                        Criar entidade
+                    </button>
+                </div>
 
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Nome</th>
-                            <th>Tipo</th>
-                            <th>Email</th>
-                            <th>Telefone</th>
-                            <th>Telemovel</th>
-                            <th>NIF</th>
-                            <th>Website</th>
-                            <th>Notas internas</th>
-                            <th>Ativa</th>
-                            <th>Contactos</th>
-                            <th>Tickets</th>
-                            <th>Acoes</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="item in entities" :key="item.id">
-                            <td><input v-model="item.name" :disabled="editingEntityId !== item.id" /></td>
-                            <td>
-                                <select v-model="item.type" :disabled="editingEntityId !== item.id">
-                                    <option value="external">external</option>
-                                    <option value="internal">internal</option>
+                <section v-if="showEntityCreateModal" class="modal-overlay" @click.self="closeEntityCreateModal">
+                    <article class="modal-card">
+                        <header class="modal-header">
+                            <div>
+                                <h3>Nova entidade</h3>
+                                <p class="muted">Preenche os dados da entidade para criar.</p>
+                            </div>
+                            <button type="button" class="ghost" @click="closeEntityCreateModal">Fechar</button>
+                        </header>
+
+                        <form class="form-grid" @submit.prevent="createEntity">
+                            <label>Tipo
+                                <select v-model="entityForm.type">
+                                    <option value="external">Externa</option>
+                                    <option value="internal">Interna</option>
                                 </select>
-                            </td>
-                            <td><input v-model="item.email" :disabled="editingEntityId !== item.id" /></td>
-                            <td><input v-model="item.phone" :disabled="editingEntityId !== item.id" /></td>
-                            <td><input v-model="item.mobile_phone" :disabled="editingEntityId !== item.id" /></td>
-                            <td><input v-model="item.tax_number" :disabled="editingEntityId !== item.id" /></td>
-                            <td><input v-model="item.website" :disabled="editingEntityId !== item.id" /></td>
-                            <td><input v-model="item.notes" :disabled="editingEntityId !== item.id" /></td>
-                            <td><input v-model="item.is_active" type="checkbox" :disabled="editingEntityId !== item.id" /></td>
-                            <td>{{ item.contacts_count }}</td>
-                            <td>{{ item.tickets_count }}</td>
-                            <td class="row-actions">
-                                <button v-if="editingEntityId !== item.id" type="button" @click="editingEntityId = item.id">Editar</button>
-                                <button v-else type="button" @click="saveEntity(item)">Guardar</button>
-                                <button type="button" class="ghost" @click="editingEntityId = null">Cancelar</button>
-                                <button type="button" class="danger" @click="deleteEntity(item)">Eliminar</button>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
+                            </label>
+                            <label>Nome <input v-model="entityForm.name" required /></label>
+                            <label>NIF <input v-model="entityForm.tax_number" /></label>
+                            <label>Email <input v-model="entityForm.email" type="email" /></label>
+                            <label>Telefone <input v-model="entityForm.phone" /></label>
+                            <label>Telemovel <input v-model="entityForm.mobile_phone" /></label>
+                            <label>Website <input v-model="entityForm.website" type="url" placeholder="https://..." /></label>
+                            <label>Morada <input v-model="entityForm.address_line" /></label>
+                            <label>Codigo postal <input v-model="entityForm.postal_code" maxlength="20" /></label>
+                            <label>Cidade <input v-model="entityForm.city" /></label>
+                            <label>Pais (2 letras) <input v-model="entityForm.country" maxlength="2" /></label>
+                            <label class="checkbox"><input v-model="entityForm.is_active" type="checkbox" />Ativa</label>
+                            <label class="full">Notas internas <textarea v-model="entityForm.notes" rows="2"></textarea></label>
+
+                            <div class="full modal-actions">
+                                <button type="submit">Criar entidade</button>
+                                <button type="button" class="ghost" @click="closeEntityCreateModal">Cancelar</button>
+                            </div>
+                        </form>
+                    </article>
+                </section>
+
+                <section v-if="showEntityEditModal" class="modal-overlay" @click.self="closeEntityEditModal">
+                    <article class="modal-card">
+                        <header class="modal-header">
+                            <div>
+                                <h3>Editar entidade</h3>
+                                <p class="muted">Atualiza os campos da entidade selecionada.</p>
+                            </div>
+                        </header>
+
+                        <form class="form-grid" @submit.prevent="saveEntity">
+                            <label>Tipo
+                                <select v-model="entityEditForm.type">
+                                    <option value="external">Externa</option>
+                                    <option value="internal">Interna</option>
+                                </select>
+                            </label>
+                            <label>Nome <input v-model="entityEditForm.name" required /></label>
+                            <label>NIF <input v-model="entityEditForm.tax_number" /></label>
+                            <label>Email <input v-model="entityEditForm.email" type="email" /></label>
+                            <label>Telefone <input v-model="entityEditForm.phone" /></label>
+                            <label>Telemovel <input v-model="entityEditForm.mobile_phone" /></label>
+                            <label>Website <input v-model="entityEditForm.website" type="url" placeholder="https://..." /></label>
+                            <label>Morada <input v-model="entityEditForm.address_line" /></label>
+                            <label>Codigo postal <input v-model="entityEditForm.postal_code" maxlength="20" /></label>
+                            <label>Cidade <input v-model="entityEditForm.city" /></label>
+                            <label>Pais (2 letras) <input v-model="entityEditForm.country" maxlength="2" /></label>
+                            <label class="checkbox"><input v-model="entityEditForm.is_active" type="checkbox" />Ativa</label>
+                            <label class="full">Notas internas <textarea v-model="entityEditForm.notes" rows="2"></textarea></label>
+
+                            <div class="full modal-actions">
+                                <button type="submit">Guardar alterações</button>
+                                <button type="button" class="ghost" @click="closeEntityEditModal">Cancelar</button>
+                            </div>
+                        </form>
+                    </article>
+                </section>
+
+                <div class="table-scroll">
+                    <table class="table entity-table">
+                        <thead>
+                            <tr>
+                                <th>Nome</th>
+                                <th>Tipo</th>
+                                <th>Email</th>
+                                <th>Telefone</th>
+                                <th>Telemóvel</th>
+                                <th>NIF</th>
+                                <th>Website</th>
+                                <th>Notas internas</th>
+                                <th>Estado</th>
+                                <th>Contactos</th>
+                                <th>Tickets</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="item in entities" :key="item.id">
+                                <td>
+                                    <span class="cell-text cell-strong" :title="item.name">{{ item.name || '-' }}</span>
+                                </td>
+                                <td>
+                                    <span class="entity-type-chip" :class="`type-${item.type}`">
+                                        {{ item.type === 'internal' ? 'interna' : 'externa' }}
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="cell-text" :title="item.email">{{ item.email || '-' }}</span>
+                                </td>
+                                <td>
+                                    <span class="cell-text">{{ item.phone || '-' }}</span>
+                                </td>
+                                <td>
+                                    <span class="cell-text">{{ item.mobile_phone || '-' }}</span>
+                                </td>
+                                <td>
+                                    <span class="cell-text">{{ item.tax_number || '-' }}</span>
+                                </td>
+                                <td>
+                                    <span class="cell-text" :title="item.website">{{ item.website || '-' }}</span>
+                                </td>
+                                <td>
+                                    <span class="cell-text notes-text" :title="item.notes">{{ item.notes || '-' }}</span>
+                                </td>
+                                <td>
+                                    <span class="status-chip" :class="item.is_active ? 'active' : 'inactive'">
+                                        {{ item.is_active ? 'Ativa' : 'Inativa' }}
+                                    </span>
+                                </td>
+                                <td><span class="count-pill">{{ item.contacts_count }}</span></td>
+                                <td><span class="count-pill">{{ item.tickets_count }}</span></td>
+                                <td class="row-actions">
+                                    <div class="entity-actions-menu">
+                                        <button
+                                            type="button"
+                                            class="ghost entity-actions-trigger"
+                                            aria-label="Abrir ações"
+                                            @click.stop="toggleEntityActionsMenu(item.id)"
+                                        >
+                                            ⋯
+                                        </button>
+                                        <div
+                                            v-if="entityActionsMenuOpenId === item.id"
+                                            class="entity-actions-dropdown"
+                                            @click.stop
+                                        >
+                                            <button
+                                                type="button"
+                                                class="entity-menu-item"
+                                                @click="openEntityEditModal(item)"
+                                            >
+                                                Editar
+                                            </button>
+                                            <button
+                                                type="button"
+                                                class="entity-menu-item danger"
+                                                @click="deleteEntity(item)"
+                                            >
+                                                Eliminar
+                                            </button>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </template>
 
             <template v-if="!loading && activeTab === 'contacts'">
                 <h2>Contactos</h2>
-                <form class="form-grid" @submit.prevent="createContact">
-                    <label class="full">Entidades relacionadas
-                        <div class="checks">
-                            <label v-for="entity in entities" :key="`new-contact-entity-${entity.id}`" class="checkbox">
-                                <input
-                                    type="checkbox"
-                                    :checked="contactForm.entity_ids.includes(entity.id)"
-                                    @change="toggleContactEntity(contactForm, entity.id)"
-                                />
-                                {{ entity.name }}
+                <div class="section-actions">
+                    <button type="button" class="btn-inline" @click="openContactCreateModal">
+                        Criar contacto
+                    </button>
+                </div>
+
+                <section v-if="showContactCreateModal" class="modal-overlay" @click.self="closeContactCreateModal">
+                    <article class="modal-card">
+                        <header class="modal-header">
+                            <div>
+                                <h3>Novo contacto</h3>
+                                <p class="muted">Preenche os dados do contacto para criar.</p>
+                            </div>
+                            <button type="button" class="ghost" @click="closeContactCreateModal">Fechar</button>
+                        </header>
+
+                        <form class="form-grid" @submit.prevent="createContact">
+                            <label class="full">Entidades relacionadas
+                                <div class="entity-ddl">
+                                    <button type="button" class="entity-ddl-toggle" @click.stop="toggleContactEntityDropdown">
+                                        <span class="entity-ddl-value">{{ contactEntityDropdownLabel }}</span>
+                                        <span class="entity-ddl-arrow" :class="{ open: contactEntityDropdownOpen }">
+                                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                                <path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                                            </svg>
+                                        </span>
+                                    </button>
+
+                                    <div v-if="contactEntityDropdownOpen" class="entity-ddl-panel">
+                                        <div class="entity-ddl-search-wrap">
+                                            <input
+                                                v-model="contactEntitySearch"
+                                                class="entity-ddl-search"
+                                                type="search"
+                                                placeholder="Pesquisar entidade por nome ou NIF..."
+                                            />
+                                        </div>
+
+                                        <div class="entity-ddl-list" role="listbox" aria-multiselectable="true">
+                                            <button
+                                                v-for="entity in filteredEntitiesForContact"
+                                                :key="`new-contact-entity-${entity.id}`"
+                                                type="button"
+                                                class="entity-ddl-option"
+                                                :class="{ selected: isContactEntitySelected(entity.id) }"
+                                                @click="toggleContactEntity(contactForm, entity.id)"
+                                            >
+                                                <span class="entity-ddl-option-name">{{ entity.name }}</span>
+                                                <span class="entity-ddl-option-check">
+                                                    {{ isContactEntitySelected(entity.id) ? '✓' : '' }}
+                                                </span>
+                                            </button>
+
+                                            <p v-if="!filteredEntitiesForContact.length" class="muted">
+                                                Sem entidades para este filtro.
+                                            </p>
+                                        </div>
+
+                                        <div class="entity-ddl-footer">
+                                            <small>{{ selectedContactEntities.length }} selecionadas</small>
+                                            <button type="button" class="ghost mini-btn" @click="clearContactEntitySelection">
+                                                Limpar
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div v-if="selectedContactEntities.length" class="entity-ddl-selected">
+                                        <button
+                                            v-for="entity in selectedContactEntities"
+                                            :key="`selected-entity-${entity.id}`"
+                                            type="button"
+                                            class="entity-ddl-tag"
+                                            @click="toggleContactEntity(contactForm, entity.id)"
+                                        >
+                                            {{ entity.name }}
+                                        </button>
+                                    </div>
+                                </div>
                             </label>
-                        </div>
-                    </label>
-                    <label>Utilizador (opcional)
-                        <select v-model="contactForm.user_id">
-                            <option value="">Sem associacao</option>
-                            <option v-for="user in userOptions" :key="user.id" :value="String(user.id)">
-                                {{ user.name }} ({{ user.email }})
-                            </option>
-                        </select>
-                    </label>
-                    <label>Funcao
-                        <select v-model="contactForm.function_id">
-                            <option value="">Sem funcao</option>
-                            <option v-for="option in contactFunctions" :key="option.id" :value="String(option.id)">
-                                {{ option.name }}
-                            </option>
-                        </select>
-                    </label>
-                    <label>Nome <input v-model="contactForm.name" required /></label>
-                    <label>Email <input v-model="contactForm.email" type="email" required /></label>
-                    <label>Telefone <input v-model="contactForm.phone" /></label>
-                    <label>Telemovel <input v-model="contactForm.mobile_phone" /></label>
-                    <label class="full">Notas internas <textarea v-model="contactForm.internal_notes" rows="2"></textarea></label>
-                    <label class="checkbox"><input v-model="contactForm.is_active" type="checkbox" />Ativo</label>
-                    <button type="submit" class="btn-inline">Criar contacto</button>
-                </form>
+                            <label>Utilizador (opcional)
+                                <select v-model="contactForm.user_id" @change="syncContactFormFromSelectedUser">
+                                    <option value="">Sem associacao</option>
+                                    <option v-for="user in availableClientUsers" :key="user.id" :value="String(user.id)">
+                                        {{ user.name }} ({{ user.email }})
+                                    </option>
+                                </select>
+                            </label>
+                            <label>Funcao
+                                <select v-model="contactForm.function_id">
+                                    <option value="">Sem funcao</option>
+                                    <option v-for="option in contactFunctions" :key="option.id" :value="String(option.id)">
+                                        {{ option.name }}
+                                    </option>
+                                </select>
+                            </label>
+                            <label>Nome <input v-model="contactForm.name" required /></label>
+                            <label>Email <input v-model="contactForm.email" type="email" required /></label>
+                            <label>Telefone <input v-model="contactForm.phone" /></label>
+                            <label>Telemovel <input v-model="contactForm.mobile_phone" /></label>
+                            <label class="full">Notas internas <textarea v-model="contactForm.internal_notes" rows="2"></textarea></label>
+                            <label class="checkbox"><input v-model="contactForm.is_active" type="checkbox" />Ativo</label>
+
+                            <div class="full modal-actions">
+                                <button type="submit">Criar contacto</button>
+                                <button type="button" class="ghost" @click="closeContactCreateModal">Cancelar</button>
+                            </div>
+                        </form>
+                    </article>
+                </section>
+
+                <section v-if="showContactEditModal" class="modal-overlay" @click.self="closeContactEditModal">
+                    <article class="modal-card">
+                        <header class="modal-header">
+                            <div>
+                                <h3>Editar contacto</h3>
+                                <p class="muted">Atualiza os dados do contacto selecionado.</p>
+                            </div>
+                        </header>
+
+                        <form class="form-grid" @submit.prevent="saveContact">
+                            <label class="full">Entidades relacionadas
+                                <div class="entity-ddl">
+                                    <button type="button" class="entity-ddl-toggle" @click.stop="toggleContactEditEntityDropdown">
+                                        <span class="entity-ddl-value">{{ contactEditEntityDropdownLabel }}</span>
+                                        <span class="entity-ddl-arrow" :class="{ open: contactEditEntityDropdownOpen }">
+                                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                                <path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                                            </svg>
+                                        </span>
+                                    </button>
+
+                                    <div v-if="contactEditEntityDropdownOpen" class="entity-ddl-panel">
+                                        <div class="entity-ddl-search-wrap">
+                                            <input
+                                                v-model="contactEditEntitySearch"
+                                                class="entity-ddl-search"
+                                                type="search"
+                                                placeholder="Pesquisar entidade por nome ou NIF..."
+                                            />
+                                        </div>
+
+                                        <div class="entity-ddl-list" role="listbox" aria-multiselectable="true">
+                                            <button
+                                                v-for="entity in filteredEntitiesForContactEdit"
+                                                :key="`edit-contact-entity-${entity.id}`"
+                                                type="button"
+                                                class="entity-ddl-option"
+                                                :class="{ selected: isContactEditEntitySelected(entity.id) }"
+                                                @click="toggleContactEntity(contactEditForm, entity.id)"
+                                            >
+                                                <span class="entity-ddl-option-name">{{ entity.name }}</span>
+                                                <span class="entity-ddl-option-check">
+                                                    {{ isContactEditEntitySelected(entity.id) ? '✓' : '' }}
+                                                </span>
+                                            </button>
+
+                                            <p v-if="!filteredEntitiesForContactEdit.length" class="muted">
+                                                Sem entidades para este filtro.
+                                            </p>
+                                        </div>
+
+                                        <div class="entity-ddl-footer">
+                                            <small>{{ selectedContactEditEntities.length }} selecionadas</small>
+                                            <button type="button" class="ghost mini-btn" @click="clearContactEditEntitySelection">
+                                                Limpar
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div v-if="selectedContactEditEntities.length" class="entity-ddl-selected">
+                                        <button
+                                            v-for="entity in selectedContactEditEntities"
+                                            :key="`selected-edit-entity-${entity.id}`"
+                                            type="button"
+                                            class="entity-ddl-tag"
+                                            @click="toggleContactEntity(contactEditForm, entity.id)"
+                                        >
+                                            {{ entity.name }}
+                                        </button>
+                                    </div>
+                                </div>
+                            </label>
+                            <label>Utilizador (opcional)
+                                <select v-model="contactEditForm.user_id" @change="syncContactEditFormFromSelectedUser">
+                                    <option value="">Sem associacao</option>
+                                    <option v-for="user in userOptions" :key="`edit-contact-user-${user.id}`" :value="String(user.id)">
+                                        {{ user.name }} ({{ user.email }})
+                                    </option>
+                                </select>
+                            </label>
+                            <label>Funcao
+                                <select v-model="contactEditForm.function_id">
+                                    <option value="">Sem funcao</option>
+                                    <option v-for="option in contactFunctions" :key="`edit-contact-function-${option.id}`" :value="String(option.id)">
+                                        {{ option.name }}
+                                    </option>
+                                </select>
+                            </label>
+                            <label>Nome <input v-model="contactEditForm.name" required /></label>
+                            <label>Email <input v-model="contactEditForm.email" type="email" required /></label>
+                            <label>Telefone <input v-model="contactEditForm.phone" /></label>
+                            <label>Telemovel <input v-model="contactEditForm.mobile_phone" /></label>
+                            <label class="full">Notas internas <textarea v-model="contactEditForm.internal_notes" rows="2"></textarea></label>
+                            <label class="checkbox"><input v-model="contactEditForm.is_active" type="checkbox" />Ativo</label>
+
+                            <div class="full modal-actions">
+                                <button type="submit">Guardar alteracoes</button>
+                                <button type="button" class="ghost" @click="closeContactEditModal">Cancelar</button>
+                            </div>
+                        </form>
+                    </article>
+                </section>
 
                 <table class="table">
                     <thead>
@@ -530,40 +1171,53 @@ onMounted(loadAll);
                     </thead>
                     <tbody>
                         <tr v-for="item in contacts" :key="item.id">
-                            <td><input v-model="item.name" :disabled="editingContactId !== item.id" /></td>
+                            <td><span class="cell-text cell-strong" :title="item.name">{{ item.name || '-' }}</span></td>
+                            <td><span class="cell-text">{{ item.function?.name || 'Sem funcao' }}</span></td>
+                            <td><span class="cell-text" :title="item.email">{{ item.email || '-' }}</span></td>
+                            <td><span class="cell-text">{{ item.phone || '-' }}</span></td>
+                            <td><span class="cell-text">{{ item.mobile_phone || '-' }}</span></td>
                             <td>
-                                <select v-model="item.function_id" :disabled="editingContactId !== item.id">
-                                    <option :value="null">Sem funcao</option>
-                                    <option v-for="option in contactFunctions" :key="`contact-${item.id}-function-${option.id}`" :value="option.id">
-                                        {{ option.name }}
-                                    </option>
-                                </select>
-                            </td>
-                            <td><input v-model="item.email" :disabled="editingContactId !== item.id" /></td>
-                            <td><input v-model="item.phone" :disabled="editingContactId !== item.id" /></td>
-                            <td><input v-model="item.mobile_phone" :disabled="editingContactId !== item.id" /></td>
-                            <td>
-                                <div v-if="editingContactId === item.id" class="checks compact">
-                                    <label v-for="entity in entities" :key="`contact-${item.id}-entity-${entity.id}`" class="checkbox">
-                                        <input
-                                            type="checkbox"
-                                            :checked="(item.entity_ids || []).includes(entity.id)"
-                                            @change="toggleContactEntity(item, entity.id)"
-                                        />
-                                        {{ entity.name }}
-                                    </label>
-                                </div>
-                                <span v-else>
+                                <span class="cell-text notes-text" :title="(item.entities || []).map((entity) => entity.name).join(', ') || '-'">
                                     {{ (item.entities || []).map((entity) => entity.name).join(', ') || '-' }}
                                 </span>
                             </td>
-                            <td><input v-model="item.internal_notes" :disabled="editingContactId !== item.id" /></td>
-                            <td><input v-model="item.is_active" type="checkbox" :disabled="editingContactId !== item.id" /></td>
+                            <td><span class="cell-text notes-text" :title="item.internal_notes">{{ item.internal_notes || '-' }}</span></td>
+                            <td>
+                                <span class="status-chip" :class="item.is_active ? 'active' : 'inactive'">
+                                    {{ item.is_active ? 'Ativo' : 'Inativo' }}
+                                </span>
+                            </td>
                             <td class="row-actions">
-                                <button v-if="editingContactId !== item.id" type="button" @click="editingContactId = item.id">Editar</button>
-                                <button v-else type="button" @click="saveContact(item)">Guardar</button>
-                                <button type="button" class="ghost" @click="editingContactId = null">Cancelar</button>
-                                <button type="button" class="danger" @click="deleteContact(item)">Eliminar</button>
+                                <div class="contact-actions-menu">
+                                    <button
+                                        type="button"
+                                        class="ghost entity-actions-trigger"
+                                        aria-label="Abrir acoes"
+                                        @click.stop="toggleContactActionsMenu(item.id)"
+                                    >
+                                        ⋯
+                                    </button>
+                                    <div
+                                        v-if="contactActionsMenuOpenId === item.id"
+                                        class="entity-actions-dropdown"
+                                        @click.stop
+                                    >
+                                        <button
+                                            type="button"
+                                            class="entity-menu-item"
+                                            @click="openContactEditModal(item)"
+                                        >
+                                            Editar
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="entity-menu-item danger"
+                                            @click="deleteContact(item)"
+                                        >
+                                            Eliminar
+                                        </button>
+                                    </div>
+                                </div>
                             </td>
                         </tr>
                     </tbody>
@@ -572,18 +1226,17 @@ onMounted(loadAll);
 
             <template v-if="!loading && activeTab === 'logs'">
                 <h2>Ticket logs</h2>
-                <form class="filters" @submit.prevent="refreshLogs">
-                    <label>Pesquisa <input v-model="logFilters.search" placeholder="ticket ou acao" /></label>
-                    <label>Acao <input v-model="logFilters.action" placeholder="status_updated" /></label>
+                <form class="filters" @submit.prevent>
+                    <label>Pesquisa <input v-model="logFilters.search" placeholder="ticket ou acao" @input="applyLogFiltersInstantly" /></label>
+                    <label>Acao <input v-model="logFilters.action" placeholder="status_updated" @input="applyLogFiltersInstantly" /></label>
                     <label>Ator
-                        <select v-model="logFilters.actor_type">
+                        <select v-model="logFilters.actor_type" @change="applyLogFiltersImmediately">
                             <option value="">Todos</option>
                             <option value="user">user</option>
                             <option value="contact">contact</option>
                             <option value="system">system</option>
                         </select>
                     </label>
-                    <button type="submit">Filtrar logs</button>
                 </form>
 
                 <table class="table">
@@ -698,6 +1351,150 @@ th, td {
 }
 .row-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
+.entity-actions-menu {
+    position: relative;
+    display: inline-flex;
+}
+
+.contact-actions-menu {
+    position: relative;
+    display: inline-flex;
+}
+
+.entity-actions-trigger {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 999px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    line-height: 1;
+}
+
+.entity-actions-dropdown {
+    position: absolute;
+    top: calc(100% + 0.28rem);
+    right: 0;
+    z-index: 35;
+    min-width: 146px;
+    border: 1px solid #dbe4ee;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.18);
+    padding: 0.32rem;
+    display: grid;
+    gap: 0.3rem;
+}
+
+.entity-menu-item {
+    width: 100%;
+    border: 1px solid #cbd5e1;
+    background: #fff;
+    color: #0f172a;
+    text-align: left;
+    border-radius: 8px;
+    padding: 0.38rem 0.54rem;
+}
+
+.entity-menu-item:hover {
+    background: #f1f5f9;
+}
+
+.entity-menu-item.danger {
+    border-color: #b91c1c;
+    background: #b91c1c;
+    color: #fff;
+}
+
+.table-scroll {
+    overflow-x: auto;
+}
+
+.entity-table {
+    min-width: 1160px;
+    table-layout: fixed;
+}
+
+.entity-table th,
+.entity-table td {
+    padding: 0.42rem 0.4rem;
+}
+
+.entity-table input,
+.entity-table select {
+    padding: 0.34rem 0.46rem;
+}
+
+.cell-text {
+    display: block;
+    max-width: 170px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #0f172a;
+    line-height: 1.35;
+}
+
+.cell-strong {
+    font-weight: 600;
+}
+
+.notes-text {
+    max-width: 210px;
+}
+
+.entity-type-chip,
+.status-chip,
+.count-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    padding: 0.14rem 0.46rem;
+    font-size: 0.78rem;
+    line-height: 1.2;
+}
+
+.entity-type-chip {
+    background: #f8fafc;
+    border-color: #dbe4ee;
+    color: #334155;
+}
+
+.entity-type-chip.type-internal {
+    background: #ecfeff;
+    border-color: #a5f3fc;
+    color: #155e75;
+}
+
+.entity-type-chip.type-external {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+    color: #334155;
+}
+
+.status-chip.active {
+    background: #dcfce7;
+    border-color: #86efac;
+    color: #166534;
+}
+
+.status-chip.inactive {
+    background: #fee2e2;
+    border-color: #fecaca;
+    color: #991b1b;
+}
+
+.count-pill {
+    min-width: 1.9rem;
+    background: #f8fafc;
+    border-color: #dbe4ee;
+    color: #334155;
+}
+
 .error {
     border: 1px solid #fecaca;
     background: #fef2f2;
@@ -723,6 +1520,201 @@ th, td {
     justify-self: start;
     align-self: end;
     min-width: 140px;
+}
+
+.section-actions {
+    display: flex;
+    justify-content: flex-start;
+}
+
+.entity-ddl {
+    position: relative;
+    display: grid;
+    gap: 0.45rem;
+    z-index: 12;
+}
+
+.entity-ddl-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    background: #fff;
+    color: #0f172a;
+    padding: 0.48rem 0.58rem;
+    cursor: pointer;
+}
+
+.entity-ddl-value {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.entity-ddl-arrow {
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #64748b;
+    transition: transform 120ms ease;
+}
+
+.entity-ddl-arrow svg {
+    width: 14px;
+    height: 14px;
+}
+
+.entity-ddl-arrow.open {
+    transform: rotate(180deg);
+}
+
+.entity-ddl-panel {
+    position: absolute;
+    top: calc(100% + 0.38rem);
+    left: 0;
+    right: 0;
+    z-index: 18;
+    border: 1px solid #dbe4ee;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+    padding: 0.45rem;
+    display: grid;
+    gap: 0.45rem;
+}
+
+.entity-ddl-search-wrap {
+    padding: 0.15rem;
+}
+
+.entity-ddl-search {
+    width: 100%;
+}
+
+.mini-btn {
+    padding: 0.34rem 0.52rem;
+    font-size: 0.84rem;
+}
+
+.entity-ddl-list {
+    max-height: 208px;
+    overflow: auto;
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    display: grid;
+    align-content: start;
+}
+
+.entity-ddl-option {
+    width: 100%;
+    border: 0;
+    border-bottom: 1px solid #e2e8f0;
+    border-radius: 0;
+    background: #fff;
+    color: #0f172a;
+    padding: 0.5rem 0.65rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    text-align: left;
+}
+
+.entity-ddl-option:last-of-type {
+    border-bottom: 0;
+}
+
+.entity-ddl-option:hover {
+    background: #f1f5f9;
+}
+
+.entity-ddl-option.selected {
+    background: #334155;
+    color: #fff;
+}
+
+.entity-ddl-option-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.entity-ddl-option-check {
+    min-width: 1rem;
+    text-align: right;
+    font-weight: 700;
+}
+
+.entity-ddl-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.2rem 0.25rem 0.05rem;
+}
+
+.entity-ddl-selected {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.entity-ddl-tag {
+    border: 1px solid #9fd9c2;
+    background: #ecfdf5;
+    color: #0f766e;
+    border-radius: 999px;
+    padding: 0.2rem 0.56rem;
+    font-size: 0.84rem;
+}
+
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(1px);
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+}
+
+.modal-card {
+    width: min(1100px, calc(100vw - 2rem));
+    max-height: calc(100vh - 2rem);
+    overflow: auto;
+    background: #fff;
+    border: 1px solid #dbe4ee;
+    border-radius: 14px;
+    padding: 0.95rem;
+    display: grid;
+    gap: 0.8rem;
+}
+
+.modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+.modal-header h3 {
+    margin: 0;
+}
+
+.modal-header p {
+    margin: 0.25rem 0 0;
+}
+
+.modal-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
 }
 
 @media (max-width: 960px) {

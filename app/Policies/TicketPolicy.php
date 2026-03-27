@@ -84,7 +84,9 @@ class TicketPolicy
      */
     public function updateStatus(User $user, Ticket $ticket): bool
     {
-        return $this->update($user, $ticket);
+        return $user->is_active
+            && $user->isOperator()
+            && $user->hasInboxAccess($ticket->inbox_id);
     }
 
     /**

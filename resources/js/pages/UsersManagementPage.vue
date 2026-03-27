@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import api from '../api/client';
 
 const loading = ref(true);
@@ -13,6 +13,7 @@ const entities = ref([]);
 const canSetAdmin = ref(false);
 const search = ref('');
 const roleFilter = ref('');
+const showCreateUserModal = ref(false);
 
 const createForm = reactive({
     name: '',
@@ -30,6 +31,7 @@ const editingInboxesUserId = ref(null);
 const editingInboxIds = ref([]);
 const editingManagerInboxIds = ref([]);
 const latestInviteUrl = ref('');
+const openActionsMenuUserId = ref(null);
 
 const isOperatorForm = computed(() => createForm.role === 'operator');
 
@@ -63,7 +65,7 @@ const load = async () => {
         await fetchMeta();
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Nao foi possivel carregar utilizadores.';
+        error.value = exception?.response?.data?.message || 'Não foi possível carregar utilizadores.';
     } finally {
         loading.value = false;
     }
@@ -108,6 +110,36 @@ const resetCreateForm = () => {
     createForm.is_admin = false;
 };
 
+const openCreateUserModal = () => {
+    resetCreateForm();
+    error.value = '';
+    success.value = '';
+    showCreateUserModal.value = true;
+};
+
+const closeCreateUserModal = () => {
+    showCreateUserModal.value = false;
+};
+
+const toggleActionsMenu = (userId) => {
+    openActionsMenuUserId.value = openActionsMenuUserId.value === userId ? null : userId;
+};
+
+const closeActionsMenu = () => {
+    openActionsMenuUserId.value = null;
+};
+
+const closeActionsMenuOnOutsideClick = (event) => {
+    if (openActionsMenuUserId.value === null) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (!target.closest('.actions-menu')) {
+        closeActionsMenu();
+    }
+};
+
 const createUser = async () => {
     saving.value = true;
     error.value = '';
@@ -137,11 +169,12 @@ const createUser = async () => {
         success.value = 'Utilizador criado. Convite gerado.';
 
         resetCreateForm();
+        showCreateUserModal.value = false;
         await fetchUsers();
     } catch (exception) {
         error.value = exception?.response?.data?.message
             || Object.values(exception?.response?.data?.errors || {})?.[0]?.[0]
-            || 'Nao foi possivel criar o utilizador.';
+            || 'Não foi possível criar o utilizador.';
     } finally {
         saving.value = false;
     }
@@ -159,7 +192,7 @@ const toggleActive = async (user) => {
         success.value = 'Estado do utilizador atualizado.';
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Nao foi possivel atualizar o utilizador.';
+        error.value = exception?.response?.data?.message || 'Não foi possível atualizar o utilizador.';
     }
 };
 const toggleAdmin = async (user) => {
@@ -171,10 +204,10 @@ const toggleAdmin = async (user) => {
             is_admin: !user.is_admin,
         });
 
-        success.value = 'Permissao de admin atualizada.';
+        success.value = 'Permissão de admin atualizada.';
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Nao foi possivel atualizar permissao de admin.';
+        error.value = exception?.response?.data?.message || 'Não foi possível atualizar permissão de admin.';
     }
 };
 
@@ -233,7 +266,7 @@ const saveInboxes = async (user) => {
         closeInboxEditor();
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Nao foi possivel atualizar acessos.';
+        error.value = exception?.response?.data?.message || 'Não foi possível atualizar acessos.';
     }
 };
 
@@ -246,7 +279,7 @@ const regenerateInvite = async (user) => {
         latestInviteUrl.value = response.data.data.url;
         success.value = 'Novo convite gerado com sucesso.';
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Nao foi possivel gerar convite.';
+        error.value = exception?.response?.data?.message || 'Não foi possível gerar convite.';
     }
 };
 
@@ -263,17 +296,24 @@ const deleteUser = async (user) => {
         success.value = 'Utilizador eliminado com sucesso.';
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Nao foi possivel eliminar utilizador.';
+        error.value = exception?.response?.data?.message || 'Não foi possível eliminar utilizador.';
     }
 };
 
-onMounted(load);
+onMounted(() => {
+    document.addEventListener('click', closeActionsMenuOnOutsideClick);
+    load();
+});
+
+onBeforeUnmount(() => {
+    document.removeEventListener('click', closeActionsMenuOnOutsideClick);
+});
 </script>
 
 <template>
     <section class="page">
         <header>
-            <h1>Gestao de Utilizadores</h1>
+            <h1>Gestão de Utilizadores</h1>
             <p class="muted">Criar operadores/clientes, gerir acessos a inboxes e gerar convites.</p>
         </header>
 
@@ -285,92 +325,107 @@ onMounted(load);
             <input :value="latestInviteUrl" readonly @focus="$event.target.select()" />
         </div>
 
-        <article class="card" v-if="!loading">
-            <h2>Criar utilizador</h2>
-            <form class="grid" @submit.prevent="createUser">
-                <label>
-                    Nome
-                    <input v-model="createForm.name" required maxlength="255" />
-                </label>
+        <div v-if="!loading" class="section-actions">
+            <button type="button" class="btn-inline" @click="openCreateUserModal">
+                Criar utilizador
+            </button>
+        </div>
 
-                <label>
-                    Email
-                    <input v-model="createForm.email" type="email" required />
-                </label>
-
-                <label>
-                    Perfil
-                    <select v-model="createForm.role">
-                        <option value="operator">Operador</option>
-                        <option value="client">Cliente</option>
-                    </select>
-                </label>
-
-                <label class="checkbox-line">
-                    <input v-model="createForm.is_active" type="checkbox" />
-                    Ativo
-                </label>
-
-                <template v-if="isOperatorForm">
-                    <div class="full-row">
-                        <p class="field-label">Acessos a inboxes</p>
-                        <div class="checks">
-                            <label v-for="inbox in manageableInboxes" :key="`inbox-${inbox.id}`">
-                                <input
-                                    type="checkbox"
-                                    :checked="createForm.inbox_ids.includes(inbox.id)"
-                                    @change="toggleInbox(inbox.id)"
-                                />
-                                {{ inbox.name }}
-                            </label>
-                        </div>
+        <section v-if="showCreateUserModal" class="modal-overlay" @click.self="closeCreateUserModal">
+            <article class="modal-card">
+                <header class="modal-header">
+                    <div>
+                        <h2>Criar utilizador</h2>
+                        <p class="muted">Criar operadores/clientes, gerir acessos a inboxes e gerar convites.</p>
                     </div>
+                </header>
 
-                    <div class="full-row">
-                        <p class="field-label">Permissao para gerir utilizadores (por inbox)</p>
-                        <div class="checks">
-                            <label v-for="inbox in manageableInboxes" :key="`manager-${inbox.id}`">
-                                <input
-                                    type="checkbox"
-                                    :checked="createForm.manager_inbox_ids.includes(inbox.id)"
-                                    :disabled="!createForm.inbox_ids.includes(inbox.id)"
-                                    @change="toggleManagerInbox(inbox.id)"
-                                />
-                                {{ inbox.name }}
-                            </label>
-                        </div>
-                    </div>
-
-                    <label v-if="canSetAdmin" class="checkbox-line full-row">
-                        <input v-model="createForm.is_admin" type="checkbox" />
-                        Operador admin (acesso global)
-                    </label>
-                </template>
-
-                <template v-else>
+                <form class="grid" @submit.prevent="createUser">
                     <label>
-                        Entidade
-                        <select v-model="createForm.entity_id" required>
-                            <option value="">Selecionar entidade</option>
-                            <option v-for="entity in entities" :key="entity.id" :value="entity.id">
-                                {{ entity.name }}
-                            </option>
+                        Nome
+                        <input v-model="createForm.name" required maxlength="255" />
+                    </label>
+
+                    <label>
+                        Email
+                        <input v-model="createForm.email" type="email" required />
+                    </label>
+
+                    <label>
+                        Perfil
+                        <select v-model="createForm.role">
+                            <option value="operator">Operador</option>
+                            <option value="client">Cliente</option>
                         </select>
                     </label>
 
-                    <label>
-                        Nome de contacto
-                        <input v-model="createForm.contact_name" maxlength="255" />
+                    <label class="checkbox-line">
+                        <input v-model="createForm.is_active" type="checkbox" />
+                        Ativo
                     </label>
-                </template>
 
-                <div class="full-row actions">
-                    <button :disabled="saving" type="submit">
-                        {{ saving ? 'A criar...' : 'Criar utilizador' }}
-                    </button>
-                </div>
-            </form>
-        </article>
+                    <template v-if="isOperatorForm">
+                        <div class="full-row">
+                            <p class="field-label">Acessos a inboxes</p>
+                            <div class="checks">
+                                <label v-for="inbox in manageableInboxes" :key="`inbox-${inbox.id}`">
+                                    <input
+                                        type="checkbox"
+                                        :checked="createForm.inbox_ids.includes(inbox.id)"
+                                        @change="toggleInbox(inbox.id)"
+                                    />
+                                    {{ inbox.name }}
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="full-row">
+                            <p class="field-label">Permissão para gerir utilizadores (por inbox)</p>
+                            <div class="checks">
+                                <label v-for="inbox in manageableInboxes" :key="`manager-${inbox.id}`">
+                                    <input
+                                        type="checkbox"
+                                        :checked="createForm.manager_inbox_ids.includes(inbox.id)"
+                                        :disabled="!createForm.inbox_ids.includes(inbox.id)"
+                                        @change="toggleManagerInbox(inbox.id)"
+                                    />
+                                    {{ inbox.name }}
+                                </label>
+                            </div>
+                        </div>
+
+                        <label v-if="canSetAdmin" class="checkbox-line full-row">
+                            <input v-model="createForm.is_admin" type="checkbox" />
+                            Operador admin (acesso global)
+                        </label>
+                    </template>
+
+                    <template v-else>
+                        <label>
+                            Entidade
+                            <select v-model="createForm.entity_id" required>
+                                <option value="">Selecionar entidade</option>
+                                <option v-for="entity in entities" :key="entity.id" :value="entity.id">
+                                    {{ entity.name }}
+                                </option>
+                            </select>
+                        </label>
+
+                        <label>
+                            Nome de contacto
+                            <input v-model="createForm.contact_name" maxlength="255" />
+                        </label>
+                    </template>
+
+                    <div class="full-row actions modal-actions">
+                        <button :disabled="saving" type="submit">
+                            {{ saving ? 'A criar...' : 'Criar utilizador' }}
+                        </button>
+                        <button type="button" class="ghost" @click="closeCreateUserModal">Cancelar</button>
+                    </div>
+                </form>
+            </article>
+        </section>
 
         <article class="card" v-if="!loading">
             <div class="toolbar">
@@ -394,7 +449,7 @@ onMounted(load);
                         <th>Perfil</th>
                         <th>Estado</th>
                         <th>Acessos</th>
-                        <th>Acoes</th>
+                        <th>Ações</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -409,7 +464,7 @@ onMounted(load);
                                 <ul v-else class="flat-list">
                                     <li v-for="inbox in user.inboxes" :key="`user-${user.id}-inbox-${inbox.id}`">
                                         {{ inbox.name }}
-                                        <small v-if="inbox.can_manage_users">(gestao)</small>
+                                        <small v-if="inbox.can_manage_users">(gestão)</small>
                                     </li>
                                 </ul>
                             </template>
@@ -418,30 +473,50 @@ onMounted(load);
                             </template>
                         </td>
                         <td>
-                            <div class="row-actions">
-                                <button type="button" @click="toggleActive(user)">
-                                    {{ user.is_active ? 'Desativar' : 'Ativar' }}
-                                </button>
-
-                                <button type="button" @click="regenerateInvite(user)">Novo convite</button>
-
+                            <div class="actions-menu">
                                 <button
-                                    v-if="user.role === 'operator'"
                                     type="button"
-                                    @click="openInboxEditor(user)"
+                                    class="ghost menu-trigger"
+                                    aria-label="Abrir ações"
+                                    @click.stop="toggleActionsMenu(user.id)"
                                 >
-                                    Gerir acessos
+                                    ⋯
                                 </button>
-
-                                <button
-                                    v-if="user.role === 'operator' && canSetAdmin"
-                                    type="button"
-                                    @click="toggleAdmin(user)"
+                                <div
+                                    v-if="openActionsMenuUserId === user.id"
+                                    class="actions-dropdown"
+                                    @click.stop
                                 >
-                                    {{ user.is_admin ? 'Remover admin' : 'Tornar admin' }}
-                                </button>
+                                    <button type="button" class="menu-item" @click="toggleActive(user); closeActionsMenu()">
+                                        {{ user.is_active ? 'Desativar' : 'Ativar' }}
+                                    </button>
 
-                                <button type="button" class="danger" @click="deleteUser(user)">Eliminar</button>
+                                    <button type="button" class="menu-item" @click="regenerateInvite(user); closeActionsMenu()">
+                                        Novo convite
+                                    </button>
+
+                                    <button
+                                        v-if="user.role === 'operator'"
+                                        type="button"
+                                        class="menu-item"
+                                        @click="openInboxEditor(user); closeActionsMenu()"
+                                    >
+                                        Gerir acessos
+                                    </button>
+
+                                    <button
+                                        v-if="user.role === 'operator' && canSetAdmin"
+                                        type="button"
+                                        class="menu-item"
+                                        @click="toggleAdmin(user); closeActionsMenu()"
+                                    >
+                                        {{ user.is_admin ? 'Remover admin' : 'Tornar admin' }}
+                                    </button>
+
+                                    <button type="button" class="menu-item danger" @click="deleteUser(user); closeActionsMenu()">
+                                        Eliminar
+                                    </button>
+                                </div>
                             </div>
 
                             <div v-if="editingInboxesUserId === user.id" class="editor-box">
@@ -457,7 +532,7 @@ onMounted(load);
                                     </label>
                                 </div>
 
-                                <p class="field-label">Permissao de gestao de utilizadores</p>
+                                <p class="field-label">Permissão de gestão de utilizadores</p>
                                 <div class="checks">
                                     <label v-for="inbox in manageableInboxes" :key="`edit-manager-${user.id}-${inbox.id}`">
                                         <input
@@ -538,6 +613,16 @@ h2 {
     padding: 0.95rem;
     display: grid;
     gap: 0.8rem;
+}
+
+.section-actions {
+    display: flex;
+    justify-content: flex-start;
+}
+
+.btn-inline {
+    width: auto;
+    min-width: 150px;
 }
 
 .grid {
@@ -627,6 +712,49 @@ button.danger {
     justify-content: flex-end;
 }
 
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(1px);
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+}
+
+.modal-card {
+    width: min(980px, calc(100vw - 2rem));
+    max-height: calc(100vh - 2rem);
+    overflow: auto;
+    background: #fff;
+    border: 1px solid #dbe4ee;
+    border-radius: 14px;
+    padding: 0.95rem;
+    display: grid;
+    gap: 0.8rem;
+}
+
+.modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+.modal-header h2 {
+    margin: 0;
+}
+
+.modal-header p {
+    margin: 0.25rem 0 0;
+}
+
+.modal-actions {
+    align-items: center;
+    gap: 0.45rem;
+}
+
 .toolbar {
     display: flex;
     justify-content: space-between;
@@ -666,6 +794,56 @@ td {
     display: flex;
     flex-wrap: wrap;
     gap: 0.45rem;
+}
+
+.actions-menu {
+    position: relative;
+    display: inline-flex;
+}
+
+.menu-trigger {
+    width: 2.2rem;
+    height: 2.2rem;
+    border-radius: 999px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.35rem;
+    line-height: 1;
+}
+
+.actions-dropdown {
+    position: absolute;
+    top: calc(100% + 0.35rem);
+    right: 0;
+    z-index: 25;
+    min-width: 180px;
+    border: 1px solid #dbe4ee;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+    padding: 0.35rem;
+    display: grid;
+    gap: 0.35rem;
+}
+
+.menu-item {
+    width: 100%;
+    border-color: #cbd5e1;
+    background: #fff;
+    color: #0f172a;
+    text-align: left;
+}
+
+.menu-item:hover {
+    background: #f1f5f9;
+}
+
+.menu-item.danger {
+    border-color: #b91c1c;
+    background: #b91c1c;
+    color: #fff;
 }
 
 .editor-box {

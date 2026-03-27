@@ -76,13 +76,21 @@ class ContactApiController extends Controller
             'entity_ids' => ['required', 'array', 'min:1'],
             'entity_ids.*' => ['integer', Rule::exists('entities', 'id')],
             'function_id' => ['nullable', 'integer', Rule::exists('contact_functions', 'id')],
-            'user_id' => ['nullable', 'integer', Rule::exists('users', 'id')],
+            'user_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('users', 'id')->where(fn (Builder $query) => $query->where('role', 'client')),
+                Rule::unique('contacts', 'user_id'),
+            ],
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'max:255'],
             'phone' => ['nullable', 'string', 'max:50'],
             'mobile_phone' => ['nullable', 'string', 'max:50'],
             'internal_notes' => ['nullable', 'string'],
             'is_active' => ['sometimes', 'boolean'],
+        ], [
+            'user_id.exists' => 'Selected user must be a client.',
+            'user_id.unique' => 'This client user is already linked to another contact.',
         ]);
 
         $entityIds = collect($validated['entity_ids'])->map(fn (mixed $id) => (int) $id)->unique()->values();
@@ -105,7 +113,10 @@ class ContactApiController extends Controller
 
         $linkedUser = null;
         if (! empty($validated['user_id'])) {
-            $linkedUser = User::query()->whereKey((int) $validated['user_id'])->firstOrFail();
+            $linkedUser = User::query()
+                ->where('role', 'client')
+                ->whereKey((int) $validated['user_id'])
+                ->firstOrFail();
         }
 
         $contact = Contact::query()->create([
@@ -137,13 +148,22 @@ class ContactApiController extends Controller
             'entity_ids' => ['sometimes', 'array', 'min:1'],
             'entity_ids.*' => ['integer', Rule::exists('entities', 'id')],
             'function_id' => ['sometimes', 'nullable', 'integer', Rule::exists('contact_functions', 'id')],
-            'user_id' => ['sometimes', 'nullable', 'integer', Rule::exists('users', 'id')],
+            'user_id' => [
+                'sometimes',
+                'nullable',
+                'integer',
+                Rule::exists('users', 'id')->where(fn (Builder $query) => $query->where('role', 'client')),
+                Rule::unique('contacts', 'user_id')->ignore($contact->id),
+            ],
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'email' => ['sometimes', 'required', 'email', 'max:255'],
             'phone' => ['sometimes', 'nullable', 'string', 'max:50'],
             'mobile_phone' => ['sometimes', 'nullable', 'string', 'max:50'],
             'internal_notes' => ['sometimes', 'nullable', 'string'],
             'is_active' => ['sometimes', 'boolean'],
+        ], [
+            'user_id.exists' => 'Selected user must be a client.',
+            'user_id.unique' => 'This client user is already linked to another contact.',
         ]);
 
         if ($validated === []) {

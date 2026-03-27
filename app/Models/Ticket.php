@@ -22,6 +22,7 @@ class Ticket extends Model
         'inbox_id',
         'entity_id',
         'contact_id',
+        'creator_contact_id',
         'created_by_user_id',
         'assigned_operator_id',
         'subject',
@@ -77,6 +78,14 @@ class Ticket extends Model
     }
 
     /**
+     * Get the contact that opened this ticket.
+     */
+    public function creatorContact(): BelongsTo
+    {
+        return $this->belongsTo(Contact::class, 'creator_contact_id');
+    }
+
+    /**
      * Get the operator that created the ticket.
      */
     public function creatorUser(): BelongsTo
@@ -114,5 +123,21 @@ class Ticket extends Model
     public function attachments(): HasMany
     {
         return $this->hasMany(TicketAttachment::class);
+    }
+
+    /**
+     * Get the ticket type option.
+     */
+    public function typeOption(): BelongsTo
+    {
+        return $this->belongsTo(TicketType::class, 'type', 'code');
+    }
+
+    /**
+     * Get the ticket status option.
+     */
+    public function statusOption(): BelongsTo
+    {
+        return $this->belongsTo(TicketStatus::class, 'status', 'code');
     }
 }

@@ -15,6 +15,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Validation\ValidationException;
 
 class TicketMessageApiController extends Controller
 {
@@ -28,21 +29,28 @@ class TicketMessageApiController extends Controller
      */
     public function store(Request $request, Ticket $ticket): JsonResponse
     {
-        $this->authorize('reply', $ticket);
+        $user = $request->user();
+        $isInternalRequest = $user->isOperator() && $request->boolean('is_internal');
+
+        if ($isInternalRequest) {
+            $this->authorize('view', $ticket);
+        } else {
+            $this->authorize('reply', $ticket);
+        }
 
         $maxFiles = (int) config('supportdesk.attachments.max_files', 5);
         $maxFileSizeKb = (int) config('supportdesk.attachments.max_file_size_kb', 10240);
 
         $validated = $request->validate([
             'body' => ['nullable', 'string', 'required_without:attachments'],
+            'body_format' => ['nullable', 'in:plain,html'],
             'is_internal' => ['nullable', 'boolean'],
             'attachments' => ['nullable', 'array', "max:{$maxFiles}"],
             'attachments.*' => ['file', "max:{$maxFileSizeKb}", 'mimes:jpg,jpeg,png,pdf,doc,docx,xls,xlsx,txt,csv,zip'],
         ]);
 
-        $user = $request->user();
         $contact = null;
-        $isInternal = $user->isOperator() && $request->boolean('is_internal');
+        $isInternal = $user->isOperator() && (bool) ($validated['is_internal'] ?? false);
 
         if ($user->isClient()) {
             $contact = Contact::query()
@@ -54,14 +62,23 @@ class TicketMessageApiController extends Controller
 
         /** @var array<int, UploadedFile> $files */
         $files = $request->file('attachments', []);
+        $bodyFormat = $this->normalizeMessageFormat($validated['body_format'] ?? null);
+        $body = $this->normalizeMessageBody($validated['body'] ?? '', $bodyFormat);
 
-        $message = DB::transaction(function () use ($ticket, $validated, $user, $contact, $isInternal, $files): TicketMessage {
+        if ($body === '' && $files === []) {
+            throw ValidationException::withMessages([
+                'body' => 'Message body is required when no attachments are provided.',
+            ]);
+        }
+
+        $message = DB::transaction(function () use ($ticket, $user, $contact, $isInternal, $files, $body, $bodyFormat): TicketMessage {
             $message = TicketMessage::query()->create([
                 'ticket_id' => $ticket->id,
                 'author_type' => $user->isClient() ? 'contact' : 'user',
                 'author_user_id' => $user->isOperator() ? $user->id : null,
                 'author_contact_id' => $user->isClient() ? $contact?->id : null,
-                'body' => $validated['body'] ?? '',
+                'body' => $body,
+                'body_format' => $bodyFormat,
                 'is_internal' => $isInternal,
             ]);
 
@@ -156,6 +173,35 @@ class TicketMessageApiController extends Controller
         return response()->json([
             'message' => 'Message sent successfully.',
         ], 201);
+    }
+
+    /**
+     * Normalize message format.
+     */
+    private function normalizeMessageFormat(?string $format): string
+    {
+        return $format === 'html' ? 'html' : 'plain';
+    }
+
+    /**
+     * Normalize and sanitize message body.
+     */
+    private function normalizeMessageBody(string $body, string $format): string
+    {
+        $trimmed = trim($body);
+
+        if ($trimmed === '') {
+            return '';
+        }
+
+        if ($format !== 'html') {
+            return $trimmed;
+        }
+
+        return trim(strip_tags(
+            $trimmed,
+            '<p><br><strong><b><em><i><u><ul><ol><li><a><blockquote><code><pre>'
+        ));
     }
 
     /**

@@ -11,6 +11,7 @@ const loading = ref(false);
 const submitting = ref(false);
 const error = ref('');
 const fieldErrors = ref({});
+const messageAttachments = ref([]);
 const options = ref({
     inboxes: [],
     entities: [],
@@ -83,26 +84,40 @@ const submit = async () => {
     error.value = '';
     fieldErrors.value = {};
 
-    const payload = {
-        inbox_id: Number(form.inbox_id),
-        entity_id: Number(form.entity_id),
-        contact_id: form.contact_id ? Number(form.contact_id) : null,
-        subject: form.subject,
-        description: form.description,
-        type: form.type,
-        priority: form.priority,
-        cc_emails: form.cc_emails || null,
-    };
+    const payload = new FormData();
+    payload.append('inbox_id', String(Number(form.inbox_id)));
+    payload.append('entity_id', String(Number(form.entity_id)));
+    payload.append('subject', form.subject);
+    payload.append('description', form.description);
+    payload.append('description_format', 'plain');
+    payload.append('type', form.type);
+    payload.append('priority', form.priority);
 
-    if (isOperator.value) {
-        payload.status = form.status;
-        payload.assigned_operator_id = form.assigned_operator_id
-            ? Number(form.assigned_operator_id)
-            : null;
+    if (form.contact_id) {
+        payload.append('contact_id', String(Number(form.contact_id)));
     }
 
+    if (form.cc_emails.trim() !== '') {
+        payload.append('cc_emails', form.cc_emails);
+    }
+
+    if (isOperator.value) {
+        payload.append('status', form.status);
+        if (form.assigned_operator_id) {
+            payload.append('assigned_operator_id', String(Number(form.assigned_operator_id)));
+        }
+    }
+
+    messageAttachments.value.forEach((file) => {
+        payload.append('attachments[]', file);
+    });
+
     try {
-        const response = await api.post('/tickets', payload);
+        const response = await api.post('/tickets', payload, {
+            headers: {
+                'Content-Type': 'multipart/form-data',
+            },
+        });
         await router.push({ name: 'tickets.show', params: { id: response.data.data.id } });
     } catch (exception) {
         fieldErrors.value = exception?.response?.data?.errors ?? {};
@@ -114,6 +129,10 @@ const submit = async () => {
 
 const closeModal = async () => {
     await router.push({ name: 'tickets.index' });
+};
+
+const onAttachmentChange = (event) => {
+    messageAttachments.value = Array.from(event?.target?.files ?? []);
 };
 
 onMounted(loadMeta);
@@ -222,6 +241,17 @@ onMounted(loadMeta);
                     Descricao
                     <textarea v-model="form.description" required></textarea>
                     <small class="field-error">{{ fieldErrors.description?.[0] }}</small>
+                </label>
+
+                <label class="col-span-3">
+                    Anexos (opcional)
+                    <input
+                        type="file"
+                        multiple
+                        accept=".jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip"
+                        @change="onAttachmentChange"
+                    />
+                    <small class="field-error">{{ fieldErrors.attachments?.[0] || fieldErrors['attachments.0']?.[0] }}</small>
                 </label>
 
                 <div class="actions col-span-3">

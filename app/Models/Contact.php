@@ -74,6 +74,14 @@ class Contact extends Model
     }
 
     /**
+     * Get tickets where this contact is the original creator.
+     */
+    public function createdTickets(): HasMany
+    {
+        return $this->hasMany(Ticket::class, 'creator_contact_id');
+    }
+
+    /**
      * Get all messages created by this contact.
      */
     public function ticketMessages(): HasMany

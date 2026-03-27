@@ -9,12 +9,15 @@ use App\Models\Inbox;
 use App\Models\Ticket;
 use App\Models\TicketAttachment;
 use App\Models\TicketMessage;
+use App\Models\TicketStatus;
+use App\Models\TicketType;
 use App\Models\User;
 use App\Services\TicketNotificationService;
 use App\Support\TicketActivityLogger;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -35,12 +38,11 @@ class TicketApiController extends Controller
         $user = $request->user();
 
         $ticketsQuery = Ticket::query()
-            ->with(['inbox', 'entity', 'contact', 'assignedOperator'])
-            ->orderByDesc('last_activity_at')
-            ->orderByDesc('created_at');
+            ->with(['inbox', 'entity', 'contact', 'assignedOperator']);
 
         $this->applyVisibilityScope($ticketsQuery, $user);
         $this->applyFilters($ticketsQuery, $request);
+        $this->applySorting($ticketsQuery, $request);
 
         $tickets = $ticketsQuery->paginate(15)->withQueryString();
 
@@ -65,6 +67,8 @@ class TicketApiController extends Controller
         $user = $request->user();
         $entities = $this->entitiesForUser($user);
         $entityIds = $entities->pluck('id');
+        $ticketStatuses = $this->ticketStatuses();
+        $ticketTypes = $this->ticketTypes();
 
         $contacts = Contact::query()
             ->with('entities:id,name')
@@ -104,10 +108,13 @@ class TicketApiController extends Controller
                     'id' => $operator->id,
                     'name' => $operator->name,
                 ])->values(),
-                'statuses' => ['open', 'in_progress', 'pending', 'closed', 'cancelled'],
-                'create_statuses' => ['open', 'in_progress', 'pending'],
+                'statuses' => $ticketStatuses->pluck('code')->values(),
+                'create_statuses' => $ticketStatuses
+                    ->where('is_initial', true)
+                    ->pluck('code')
+                    ->values(),
                 'priorities' => ['low', 'medium', 'high', 'urgent'],
-                'types' => ['question', 'incident', 'request', 'task', 'other'],
+                'types' => $ticketTypes->pluck('code')->values(),
             ],
         ]);
     }
@@ -126,12 +133,15 @@ class TicketApiController extends Controller
             'entity_id' => ['required', 'integer', Rule::exists('entities', 'id')],
             'contact_id' => ['nullable', 'integer', Rule::exists('contacts', 'id')],
             'subject' => ['required', 'string', 'max:255'],
-            'description' => ['required', 'string'],
-            'type' => ['required', Rule::in(['question', 'incident', 'request', 'task', 'other'])],
+            'description' => ['nullable', 'string', 'required_without:attachments'],
+            'description_format' => ['nullable', Rule::in(['plain', 'html'])],
+            'type' => ['required', Rule::exists('ticket_types', 'code')],
             'priority' => ['required', Rule::in(['low', 'medium', 'high', 'urgent'])],
-            'status' => ['nullable', Rule::in(['open', 'in_progress', 'pending'])],
+            'status' => ['nullable', Rule::exists('ticket_statuses', 'code')->where(fn ($query) => $query->where('is_initial', true))],
             'assigned_operator_id' => ['nullable', 'integer', Rule::exists('users', 'id')],
             'cc_emails' => ['nullable', 'string'],
+            'attachments' => ['nullable', 'array', 'max:5'],
+            'attachments.*' => ['file', 'max:10240', 'mimes:jpg,jpeg,png,pdf,doc,docx,xls,xlsx,txt,csv,zip'],
         ]);
 
         if ($user->isOperator() && ! $user->hasInboxAccess((int) $validated['inbox_id'])) {
@@ -145,7 +155,17 @@ class TicketApiController extends Controller
         $contact = $this->resolveTicketContact($user, (int) $validated['entity_id'], $validated['contact_id'] ?? null);
         $assignedOperator = $this->resolveAssignedOperator($validated['assigned_operator_id'] ?? null, (int) $validated['inbox_id']);
         $ccEmails = $this->parseCcEmails($validated['cc_emails'] ?? null);
+        $descriptionFormat = $this->normalizeMessageFormat($validated['description_format'] ?? null);
+        $descriptionBody = $this->normalizeMessageBody($validated['description'] ?? '', $descriptionFormat);
         $initialStatus = $user->isOperator() ? ($validated['status'] ?? 'open') : 'open';
+        /** @var array<int, UploadedFile> $files */
+        $files = $request->file('attachments', []);
+
+        if ($descriptionBody === '' && $files === []) {
+            throw ValidationException::withMessages([
+                'description' => 'Message body is required when no attachments are provided.',
+            ]);
+        }
 
         $ticket = DB::transaction(function () use (
             $user,
@@ -153,17 +173,21 @@ class TicketApiController extends Controller
             $contact,
             $assignedOperator,
             $ccEmails,
-            $initialStatus
+            $initialStatus,
+            $descriptionFormat,
+            $descriptionBody,
+            $files
         ) {
             $ticket = Ticket::query()->create([
                 'ticket_number' => 'TMP-'.(string) Str::ulid(),
                 'inbox_id' => $validated['inbox_id'],
                 'entity_id' => $validated['entity_id'],
                 'contact_id' => $contact?->id,
+                'creator_contact_id' => $contact?->id,
                 'created_by_user_id' => $user->id,
                 'assigned_operator_id' => $assignedOperator?->id,
                 'subject' => $validated['subject'],
-                'description' => $validated['description'],
+                'description' => $descriptionBody,
                 'status' => $initialStatus,
                 'priority' => $validated['priority'],
                 'type' => $validated['type'],
@@ -183,9 +207,44 @@ class TicketApiController extends Controller
                 'author_type' => $user->isClient() ? 'contact' : 'user',
                 'author_user_id' => $user->isOperator() ? $user->id : null,
                 'author_contact_id' => $user->isClient() ? $contact?->id : null,
-                'body' => $validated['description'],
+                'body' => $descriptionBody,
+                'body_format' => $descriptionFormat,
                 'is_internal' => false,
             ]);
+
+            $attachmentsPayload = [];
+            $disk = (string) config('supportdesk.attachments.disk', 'local');
+
+            foreach ($files as $file) {
+                $storedPath = $file->store("ticket-attachments/{$ticket->id}/{$message->id}", $disk);
+
+                $attachment = TicketAttachment::query()->create([
+                    'uuid' => (string) Str::uuid(),
+                    'ticket_id' => $ticket->id,
+                    'ticket_message_id' => $message->id,
+                    'disk' => $disk,
+                    'path' => $storedPath,
+                    'original_name' => $file->getClientOriginalName(),
+                    'mime_type' => $file->getClientMimeType(),
+                    'size' => $file->getSize(),
+                    'uploaded_by_user_id' => $user->isOperator() ? $user->id : null,
+                    'uploaded_by_contact_id' => $user->isClient() ? $contact?->id : null,
+                ]);
+
+                $attachmentsPayload[] = [
+                    'id' => $attachment->id,
+                    'uuid' => $attachment->uuid,
+                    'name' => $attachment->original_name,
+                    'mime' => $attachment->mime_type,
+                    'size' => $attachment->size,
+                ];
+            }
+
+            if ($attachmentsPayload !== []) {
+                $message->update([
+                    'attachments' => $attachmentsPayload,
+                ]);
+            }
 
             $actor = TicketActivityLogger::actorFor($user, $contact);
 
@@ -225,6 +284,24 @@ class TicketApiController extends Controller
                 );
             }
 
+            if ($attachmentsPayload !== []) {
+                TicketActivityLogger::log(
+                    $ticket,
+                    'attachments_added',
+                    null,
+                    null,
+                    null,
+                    $actor['actor_type'],
+                    $actor['actor_user_id'],
+                    $actor['actor_contact_id'],
+                    [
+                        'initial_message' => true,
+                        'message_id' => $message->id,
+                        'attachments' => array_map(fn (array $attachment) => $attachment['name'], $attachmentsPayload),
+                    ]
+                );
+            }
+
             return $ticket;
         });
 
@@ -250,6 +327,7 @@ class TicketApiController extends Controller
             'inbox',
             'entity',
             'contact',
+            'creatorContact',
             'creatorUser',
             'assignedOperator',
             'messages.authorUser',
@@ -278,6 +356,7 @@ class TicketApiController extends Controller
             ->where('is_active', true)
             ->orderBy('name')
             ->get();
+        $navigation = $this->adjacentTickets($ticket, $request->user());
 
         return response()->json([
             'data' => $this->serializeTicketDetail(
@@ -286,6 +365,7 @@ class TicketApiController extends Controller
                 $availableInboxes,
                 $availableEntities,
                 $availableContacts,
+                $navigation,
                 $request
             ),
         ]);
@@ -302,8 +382,8 @@ class TicketApiController extends Controller
             'subject' => ['sometimes', 'required', 'string', 'max:255'],
             'description' => ['sometimes', 'nullable', 'string'],
             'priority' => ['sometimes', Rule::in(['low', 'medium', 'high', 'urgent'])],
-            'type' => ['sometimes', Rule::in(['question', 'incident', 'request', 'task', 'other'])],
-            'status' => ['sometimes', Rule::in(['open', 'in_progress', 'pending', 'closed', 'cancelled'])],
+            'type' => ['sometimes', Rule::exists('ticket_types', 'code')],
+            'status' => ['sometimes', Rule::exists('ticket_statuses', 'code')],
             'inbox_id' => ['sometimes', 'integer', Rule::exists('inboxes', 'id')],
             'entity_id' => ['sometimes', 'integer', Rule::exists('entities', 'id')],
             'contact_id' => ['sometimes', 'nullable', 'integer', Rule::exists('contacts', 'id')],
@@ -552,7 +632,7 @@ class TicketApiController extends Controller
         $this->authorize('updateStatus', $ticket);
 
         $validated = $request->validate([
-            'status' => ['required', Rule::in(['open', 'in_progress', 'pending', 'closed', 'cancelled'])],
+            'status' => ['required', Rule::exists('ticket_statuses', 'code')],
         ]);
 
         $oldStatus = $ticket->status;
@@ -650,7 +730,7 @@ class TicketApiController extends Controller
         $validated = $request->validate([
             'subject' => ['sometimes', 'required', 'string', 'max:255'],
             'priority' => ['sometimes', Rule::in(['low', 'medium', 'high', 'urgent'])],
-            'type' => ['sometimes', Rule::in(['question', 'incident', 'request', 'task', 'other'])],
+            'type' => ['sometimes', Rule::exists('ticket_types', 'code')],
             'inbox_id' => ['sometimes', 'integer', Rule::exists('inboxes', 'id')],
             'cc_emails' => ['sometimes', 'nullable', 'string'],
         ]);
@@ -812,6 +892,10 @@ class TicketApiController extends Controller
             $query->where('type', $request->string('type'));
         }
 
+        if ($request->filled('priority')) {
+            $query->where('priority', $request->string('priority'));
+        }
+
         if ($request->filled('entity_id')) {
             $query->where('entity_id', $request->integer('entity_id'));
         }
@@ -826,6 +910,79 @@ class TicketApiController extends Controller
                     ->orWhereHas('contact', fn (Builder $contactQuery) => $contactQuery->where('email', 'like', "%{$search}%"));
             });
         }
+    }
+
+    /**
+     * Apply listing sorting.
+     */
+    private function applySorting(Builder $query, Request $request): void
+    {
+        $allowedSortBy = [
+            'ticket_number',
+            'subject',
+            'priority',
+            'type',
+            'status',
+            'request_date',
+            'last_activity_at',
+            'client',
+        ];
+
+        $sortBy = trim((string) $request->string('sort_by', 'last_activity_at'));
+        $sortDir = strtolower(trim((string) $request->string('sort_dir', 'desc'))) === 'asc' ? 'asc' : 'desc';
+
+        if (! in_array($sortBy, $allowedSortBy, true)) {
+            $sortBy = 'last_activity_at';
+        }
+
+        switch ($sortBy) {
+            case 'ticket_number':
+            case 'subject':
+            case 'priority':
+            case 'type':
+            case 'status':
+            case 'last_activity_at':
+                $query->orderBy($sortBy, $sortDir);
+                break;
+
+            case 'request_date':
+                $query->orderBy('created_at', $sortDir);
+                break;
+
+            case 'client':
+                $query->orderByRaw(
+                    "COALESCE((SELECT `name` FROM `contacts` WHERE `contacts`.`id` = `tickets`.`contact_id` LIMIT 1), (SELECT `name` FROM `entities` WHERE `entities`.`id` = `tickets`.`entity_id` LIMIT 1)) {$sortDir}"
+                );
+                break;
+        }
+
+        // Stable tie-breakers keep pagination deterministic.
+        if ($sortBy !== 'last_activity_at') {
+            $query->orderByDesc('last_activity_at');
+        }
+        $query->orderByDesc('id');
+    }
+
+    /**
+     * Get available ticket statuses.
+     */
+    private function ticketStatuses()
+    {
+        return TicketStatus::query()
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+    }
+
+    /**
+     * Get available ticket types.
+     */
+    private function ticketTypes()
+    {
+        return TicketType::query()
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
     }
 
     /**
@@ -932,6 +1089,35 @@ class TicketApiController extends Controller
     }
 
     /**
+     * Normalize message format.
+     */
+    private function normalizeMessageFormat(?string $format): string
+    {
+        return $format === 'html' ? 'html' : 'plain';
+    }
+
+    /**
+     * Normalize and sanitize message body.
+     */
+    private function normalizeMessageBody(string $body, string $format): string
+    {
+        $trimmed = trim($body);
+
+        if ($trimmed === '') {
+            return '';
+        }
+
+        if ($format !== 'html') {
+            return $trimmed;
+        }
+
+        return trim(strip_tags(
+            $trimmed,
+            '<p><br><strong><b><em><i><u><ul><ol><li><a><blockquote><code><pre>'
+        ));
+    }
+
+    /**
      * Build timestamp updates for a status transition.
      *
      * @return array<string, mixed>
@@ -967,6 +1153,7 @@ class TicketApiController extends Controller
             'status' => $ticket->status,
             'priority' => $ticket->priority,
             'type' => $ticket->type,
+            'created_at' => optional($ticket->created_at)?->toIso8601String(),
             'last_activity_at' => optional($ticket->last_activity_at ?? $ticket->updated_at)?->toIso8601String(),
             'inbox' => $ticket->inbox ? ['id' => $ticket->inbox->id, 'name' => $ticket->inbox->name] : null,
             'entity' => $ticket->entity ? ['id' => $ticket->entity->id, 'name' => $ticket->entity->name] : null,
@@ -982,6 +1169,7 @@ class TicketApiController extends Controller
      * @param  \Illuminate\Support\Collection<int, Inbox>  $availableInboxes
      * @param  \Illuminate\Support\Collection<int, Entity>  $availableEntities
      * @param  \Illuminate\Support\Collection<int, Contact>  $availableContacts
+     * @param  array{previous:?array{id:int,ticket_number:string,subject:string},next:?array{id:int,ticket_number:string,subject:string}}  $navigation
      * @return array<string, mixed>
      */
     private function serializeTicketDetail(
@@ -990,6 +1178,7 @@ class TicketApiController extends Controller
         $availableInboxes,
         $availableEntities,
         $availableContacts,
+        array $navigation,
         Request $request
     ): array
     {
@@ -1008,10 +1197,12 @@ class TicketApiController extends Controller
             'inbox' => $ticket->inbox ? ['id' => $ticket->inbox->id, 'name' => $ticket->inbox->name] : null,
             'entity' => $ticket->entity ? ['id' => $ticket->entity->id, 'name' => $ticket->entity->name] : null,
             'contact' => $ticket->contact ? ['id' => $ticket->contact->id, 'name' => $ticket->contact->name, 'email' => $ticket->contact->email] : null,
+            'creator_contact' => $ticket->creatorContact ? ['id' => $ticket->creatorContact->id, 'name' => $ticket->creatorContact->name, 'email' => $ticket->creatorContact->email] : null,
             'creator_user' => $ticket->creatorUser ? ['id' => $ticket->creatorUser->id, 'name' => $ticket->creatorUser->name] : null,
             'assigned_operator' => $ticket->assignedOperator ? ['id' => $ticket->assignedOperator->id, 'name' => $ticket->assignedOperator->name] : null,
             'permissions' => [
                 'can_reply' => $request->user()->can('reply', $ticket),
+                'can_add_internal_note' => $request->user()->isOperator() && $request->user()->can('view', $ticket),
                 'can_update_status' => $request->user()->can('updateStatus', $ticket),
                 'can_assign' => $request->user()->can('assign', $ticket),
                 'can_update_metadata' => $request->user()->can('updateMetadata', $ticket),
@@ -1025,6 +1216,7 @@ class TicketApiController extends Controller
                 'author_user' => $message->authorUser ? ['id' => $message->authorUser->id, 'name' => $message->authorUser->name] : null,
                 'author_contact' => $message->authorContact ? ['id' => $message->authorContact->id, 'name' => $message->authorContact->name] : null,
                 'body' => $message->body,
+                'body_format' => $message->body_format,
                 'is_internal' => $message->is_internal,
                 'created_at' => optional($message->created_at)?->toIso8601String(),
                 'can_edit' => false,
@@ -1067,6 +1259,41 @@ class TicketApiController extends Controller
                 'email' => $contact->email,
                 'entity_ids' => $contact->entities->pluck('id')->values()->all(),
             ])->values()->all(),
+            'navigation' => $navigation,
+        ];
+    }
+
+    /**
+     * Resolve previous and next tickets visible to the current user.
+     *
+     * @return array{previous:?array{id:int,ticket_number:string,subject:string},next:?array{id:int,ticket_number:string,subject:string}}
+     */
+    private function adjacentTickets(Ticket $ticket, User $user): array
+    {
+        $visibleTickets = Ticket::query()->select(['id', 'ticket_number', 'subject']);
+        $this->applyVisibilityScope($visibleTickets, $user);
+
+        $previous = (clone $visibleTickets)
+            ->where('id', '<', $ticket->id)
+            ->orderByDesc('id')
+            ->first();
+
+        $next = (clone $visibleTickets)
+            ->where('id', '>', $ticket->id)
+            ->orderBy('id')
+            ->first();
+
+        return [
+            'previous' => $previous ? [
+                'id' => $previous->id,
+                'ticket_number' => $previous->ticket_number,
+                'subject' => $previous->subject,
+            ] : null,
+            'next' => $next ? [
+                'id' => $next->id,
+                'ticket_number' => $next->ticket_number,
+                'subject' => $next->subject,
+            ] : null,
         ];
     }
 }
