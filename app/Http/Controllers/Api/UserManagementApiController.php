@@ -65,6 +65,7 @@ class UserManagementApiController extends Controller
             : $actor->manageableInboxes()->pluck('inboxes.id')->all();
 
         $query = User::query()
+            ->withCount(['createdTickets as tickets_count'])
             ->with(['accessibleInboxes:id,name', 'contacts.entities:id,name'])
             ->orderBy('name');
 
@@ -390,6 +391,7 @@ class UserManagementApiController extends Controller
             'is_active' => (bool) $user->is_active,
             'is_admin' => (bool) $user->is_admin,
             'can_manage_users' => $user->canManageUsers(),
+            'tickets_count' => (int) ($user->tickets_count ?? $user->created_tickets_count ?? 0),
             'inboxes' => $user->accessibleInboxes->map(fn (Inbox $inbox) => [
                 'id' => $inbox->id,
                 'name' => $inbox->name,

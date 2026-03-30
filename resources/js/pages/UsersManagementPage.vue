@@ -1,7 +1,9 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import api from '../api/client';
 
+const router = useRouter();
 const loading = ref(true);
 const saving = ref(false);
 const error = ref('');
@@ -300,6 +302,15 @@ const deleteUser = async (user) => {
     }
 };
 
+const goToUserTickets = async (user) => {
+    await router.push({
+        name: 'tickets.index',
+        query: {
+            created_by_user_id: String(user.id),
+        },
+    });
+};
+
 onMounted(() => {
     document.addEventListener('click', closeActionsMenuOnOutsideClick);
     load();
@@ -448,6 +459,7 @@ onBeforeUnmount(() => {
                         <th>Email</th>
                         <th>Perfil</th>
                         <th>Estado</th>
+                        <th>Tickets</th>
                         <th>Acessos</th>
                         <th>Ações</th>
                     </tr>
@@ -458,6 +470,11 @@ onBeforeUnmount(() => {
                         <td>{{ user.email }}</td>
                         <td>{{ user.role === 'operator' ? (user.is_admin ? 'Operador admin' : 'Operador') : 'Cliente' }}</td>
                         <td>{{ user.is_active ? 'Ativo' : 'Inativo' }}</td>
+                        <td>
+                            <button type="button" class="ticket-count-link" @click="goToUserTickets(user)">
+                                {{ user.tickets_count ?? 0 }}
+                            </button>
+                        </td>
                         <td>
                             <template v-if="user.role === 'operator'">
                                 <span v-if="user.inboxes.length === 0" class="muted">Sem inboxes</span>
@@ -668,6 +685,21 @@ button.danger {
     border-color: #b91c1c;
     background: #b91c1c;
     color: #fff;
+}
+
+.ticket-count-link {
+    min-width: 2.1rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid #cbd5e1;
+    background: #f8fafc;
+    color: #334155;
+}
+
+.ticket-count-link:hover {
+    border-color: #9fd9c2;
+    background: #ecfdf5;
+    color: #0f766e;
 }
 
 .checkbox-line {

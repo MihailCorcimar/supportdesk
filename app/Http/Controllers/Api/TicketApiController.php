@@ -900,6 +900,10 @@ class TicketApiController extends Controller
             $query->where('entity_id', $request->integer('entity_id'));
         }
 
+        if ($request->filled('created_by_user_id')) {
+            $query->where('created_by_user_id', $request->integer('created_by_user_id'));
+        }
+
         if ($request->filled('search')) {
             $search = trim((string) $request->string('search'));
 

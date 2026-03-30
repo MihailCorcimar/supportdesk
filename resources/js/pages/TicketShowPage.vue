@@ -16,7 +16,6 @@ const quickActionMessage = ref('');
 const activeTopTab = ref(normalizeTopTab(typeof route.query.tab === 'string' ? route.query.tab : 'conversation'));
 const ticket = ref(null);
 const messageBody = ref('');
-const isInternal = ref(false);
 const messageFiles = ref([]);
 const noteBody = ref('');
 const savingStatus = ref(false);
@@ -73,6 +72,8 @@ const canUpdateStatus = computed(() => ticket.value?.permissions?.can_update_sta
 const canAssign = computed(() => ticket.value?.permissions?.can_assign);
 const canUpdateMetadata = computed(() => ticket.value?.permissions?.can_update_metadata);
 const canQuickClose = computed(() => canUpdateStatus.value && !['closed', 'cancelled'].includes(ticket.value?.status));
+const canChat = computed(() => Boolean(ticket.value?.permissions?.can_reply));
+const chatMessages = computed(() => (ticket.value?.messages || []).filter((message) => !message.is_internal));
 const internalNotes = computed(() => (ticket.value?.messages || []).filter((message) => message.is_internal));
 const canAddNotes = computed(() => isOperator.value && ticket.value?.permissions?.can_add_internal_note);
 const statusOrder = ['open', 'in_progress', 'pending', 'closed', 'cancelled'];
@@ -80,6 +81,7 @@ const headerStatusOptions = computed(() => statusOrder.filter((status) => status
 const isAlreadyClosed = computed(() => ticket.value?.status === 'closed');
 const previousTicket = computed(() => ticket.value?.navigation?.previous ?? null);
 const nextTicket = computed(() => ticket.value?.navigation?.next ?? null);
+let conversationRefreshTimer = null;
 
 const loadTicket = async () => {
     loading.value = true;
@@ -248,10 +250,6 @@ const sendMessage = async () => {
             formData.append('body', messageBody.value);
         }
 
-        if (isInternal.value) {
-            formData.append('is_internal', '1');
-        }
-
         messageFiles.value.forEach((file) => {
             formData.append('attachments[]', file);
         });
@@ -263,7 +261,6 @@ const sendMessage = async () => {
         });
 
         messageBody.value = '';
-        isInternal.value = false;
         messageFiles.value = [];
 
         const input = document.getElementById('message-attachments');
@@ -334,6 +331,27 @@ const messageAuthor = (message) => {
 const messageAuthorInitial = (message) => {
     const name = messageAuthor(message);
     return name ? name.charAt(0).toUpperCase() : 'S';
+};
+
+const isOwnMessage = (message) => {
+    if (message.author_type !== 'user') return false;
+    return Number(message.author_user?.id) === Number(auth.state.user?.id);
+};
+
+const stopConversationRefresh = () => {
+    if (conversationRefreshTimer) {
+        clearInterval(conversationRefreshTimer);
+        conversationRefreshTimer = null;
+    }
+};
+
+const startConversationRefresh = () => {
+    stopConversationRefresh();
+    conversationRefreshTimer = setInterval(() => {
+        if (activeTopTab.value !== 'conversation') return;
+        if (sendingMessage.value || loading.value) return;
+        loadTicket();
+    }, 8000);
 };
 
 const logActor = (log) => {
@@ -427,9 +445,11 @@ const activityGroups = computed(() => {
 onMounted(loadTicket);
 onMounted(() => {
     document.addEventListener('click', closeStatusMenuOnOutsideClick);
+    startConversationRefresh();
 });
 onBeforeUnmount(() => {
     document.removeEventListener('click', closeStatusMenuOnOutsideClick);
+    stopConversationRefresh();
 });
 watch(
     () => route.params.id,
@@ -572,7 +592,7 @@ watch(
 
                 <div v-if="activeTopTab === 'conversation'" class="conversation-tab-content">
                     <div class="message-stream">
-                        <article class="message-row" v-for="message in ticket.messages" :key="message.id">
+                        <article class="message-row" :class="{ own: isOwnMessage(message) }" v-for="message in chatMessages" :key="message.id">
                             <div class="avatar">{{ messageAuthorInitial(message) }}</div>
 
                             <div class="bubble" :class="{ internal: message.is_internal }">
@@ -582,8 +602,6 @@ watch(
                                 </div>
 
                                 <p v-if="message.body">{{ message.body }}</p>
-
-                                <span v-if="message.is_internal" class="internal-tag">Nota interna</span>
 
                                 <ul v-if="message.attachments?.length" class="attachment-list">
                                     <li v-for="attachment in message.attachments" :key="attachment.uuid">
@@ -596,11 +614,14 @@ watch(
                             </div>
                         </article>
 
-                        <p v-if="!ticket.messages.length" class="empty-row">Sem mensagens neste ticket.</p>
+                        <p v-if="!chatMessages.length" class="empty-row">Sem mensagens públicas neste ticket.</p>
+                        <p v-if="isOperator && internalNotes.length" class="chat-note-hint">
+                            Existem {{ internalNotes.length }} notas internas no separador Notas.
+                        </p>
                     </div>
 
                     <form
-                        v-if="ticket.permissions?.can_reply"
+                        v-if="canChat"
                         id="composer-section"
                         class="composer"
                         @submit.prevent="sendMessage"
@@ -608,18 +629,13 @@ watch(
                         <textarea
                             id="ticket-composer-input"
                             v-model="messageBody"
-                            placeholder="Comentar ou escrever / para comandos"
+                            placeholder="Escreva uma resposta para o cliente..."
                         />
 
                         <div class="composer-tools">
                             <label class="upload-label">
                                 Anexos
                                 <input id="message-attachments" type="file" multiple @change="handleFilesChange">
-                            </label>
-
-                            <label v-if="isOperator" class="internal-check">
-                                <input v-model="isInternal" type="checkbox">
-                                Mensagem interna
                             </label>
 
                             <button class="btn-send" type="submit" :disabled="sendingMessage">
@@ -633,6 +649,8 @@ watch(
                             </li>
                         </ul>
                     </form>
+
+                    <p v-else class="notes-muted">Este ticket não aceita novas respostas no estado atual.</p>
                 </div>
 
                 <div v-else-if="activeTopTab === 'activity_logs'" class="activity-stream">
@@ -1358,6 +1376,21 @@ watch(
     align-items: start;
 }
 
+.message-row.own {
+    grid-template-columns: minmax(0, 1fr) 34px;
+}
+
+.message-row.own .avatar {
+    order: 2;
+    background: #0f766e;
+}
+
+.message-row.own .bubble {
+    order: 1;
+    background: #ecfdf5;
+    border-color: #9fd9c2;
+}
+
 .avatar {
     width: 34px;
     height: 34px;
@@ -1427,6 +1460,12 @@ watch(
 .empty-row {
     margin: 0;
     color: #64748b;
+}
+
+.chat-note-hint {
+    margin: 0;
+    color: #64748b;
+    font-size: 0.84rem;
 }
 
 .composer {

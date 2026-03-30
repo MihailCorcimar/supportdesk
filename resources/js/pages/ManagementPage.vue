@@ -21,6 +21,11 @@ const users = ref([]);
 const logs = ref([]);
 
 const inboxForm = reactive({ name: '', is_active: true });
+const inboxEditForm = reactive({
+    name: '',
+    is_active: true,
+    operator_ids: [],
+});
 const entityForm = reactive({
     type: 'external',
     name: '',
@@ -78,10 +83,13 @@ const logFilters = reactive({ search: '', action: '', actor_type: '' });
 const editingInboxId = ref(null);
 const editingEntityId = ref(null);
 const editingContactId = ref(null);
+const showInboxEditModal = ref(false);
 const showEntityCreateModal = ref(false);
 const showEntityEditModal = ref(false);
 const showContactCreateModal = ref(false);
 const showContactEditModal = ref(false);
+const inboxOperatorSearch = ref('');
+const inboxOperatorDropdownOpen = ref(false);
 const contactEntitySearch = ref('');
 const contactEntityDropdownOpen = ref(false);
 const contactEditEntitySearch = ref('');
@@ -89,6 +97,7 @@ const contactEditEntityDropdownOpen = ref(false);
 const entityActionsMenuOpenId = ref(null);
 const contactActionsMenuOpenId = ref(null);
 
+const operatorOptions = computed(() => users.value.filter((user) => user.role === 'operator'));
 const userOptions = computed(() => users.value.filter((user) => user.role === 'client'));
 const usedClientUserIds = computed(() => {
     const ids = contacts.value
@@ -160,6 +169,36 @@ const contactEditEntityDropdownLabel = computed(() => {
     return `${selectedContactEditEntities.value.length} entidades selecionadas`;
 });
 const isContactEditEntitySelected = (entityId) => selectedContactEditEntityIds.value.has(Number(entityId));
+const filteredInboxOperators = computed(() => {
+    const term = inboxOperatorSearch.value.trim().toLowerCase();
+
+    if (!term) {
+        return operatorOptions.value;
+    }
+
+    return operatorOptions.value.filter((operator) => {
+        const name = String(operator.name || '').toLowerCase();
+        const email = String(operator.email || '').toLowerCase();
+        return name.includes(term) || email.includes(term);
+    });
+});
+const selectedInboxOperators = computed(() => {
+    const selected = new Set((inboxEditForm.operator_ids || []).map((id) => Number(id)));
+    return operatorOptions.value.filter((operator) => selected.has(Number(operator.id)));
+});
+const selectedInboxOperatorIds = computed(() => new Set((inboxEditForm.operator_ids || []).map((id) => Number(id))));
+const inboxOperatorDropdownLabel = computed(() => {
+    if (!selectedInboxOperators.value.length) {
+        return 'Selecionar operadores';
+    }
+
+    if (selectedInboxOperators.value.length === 1) {
+        return selectedInboxOperators.value[0].name;
+    }
+
+    return `${selectedInboxOperators.value.length} operadores selecionados`;
+});
+const isInboxOperatorSelected = (operatorId) => selectedInboxOperatorIds.value.has(Number(operatorId));
 const tabLabel = {
     inboxes: 'Inboxes',
     entities: 'Entidades',
@@ -211,6 +250,64 @@ const loadAll = async () => {
 const resetMessages = () => {
     error.value = '';
     success.value = '';
+};
+
+const resetInboxEditForm = () => {
+    inboxEditForm.name = '';
+    inboxEditForm.is_active = true;
+    inboxEditForm.operator_ids = [];
+    inboxOperatorSearch.value = '';
+    inboxOperatorDropdownOpen.value = false;
+};
+
+const openInboxEditModal = (inbox) => {
+    resetMessages();
+    editingInboxId.value = inbox.id;
+    inboxEditForm.name = inbox.name ?? '';
+    inboxEditForm.is_active = Boolean(inbox.is_active);
+    inboxEditForm.operator_ids = (inbox.operators || []).map((operator) => Number(operator.id));
+    inboxOperatorSearch.value = '';
+    inboxOperatorDropdownOpen.value = false;
+    showInboxEditModal.value = true;
+};
+
+const closeInboxEditModal = () => {
+    showInboxEditModal.value = false;
+    editingInboxId.value = null;
+    resetInboxEditForm();
+};
+
+const toggleInboxOperatorDropdown = () => {
+    inboxOperatorDropdownOpen.value = !inboxOperatorDropdownOpen.value;
+};
+
+const toggleInboxOperator = (operatorId) => {
+    const normalizedId = Number(operatorId);
+    if (!Array.isArray(inboxEditForm.operator_ids)) {
+        inboxEditForm.operator_ids = [];
+    }
+
+    if (inboxEditForm.operator_ids.includes(normalizedId)) {
+        inboxEditForm.operator_ids = inboxEditForm.operator_ids.filter((id) => id !== normalizedId);
+        return;
+    }
+
+    inboxEditForm.operator_ids = [...inboxEditForm.operator_ids, normalizedId];
+};
+
+const clearInboxOperatorsSelection = () => {
+    inboxEditForm.operator_ids = [];
+};
+
+const closeInboxOperatorDropdownOnOutsideClick = (event) => {
+    if (!inboxOperatorDropdownOpen.value) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (!target.closest('.inbox-operators-ddl')) {
+        inboxOperatorDropdownOpen.value = false;
+    }
 };
 
 const toggleContactEntity = (target, entityId) => {
@@ -373,16 +470,28 @@ const createInbox = async () => {
     }
 };
 
-const saveInbox = async (inbox) => {
+const goToInboxTickets = async (inboxId) => {
+    await router.push({
+        name: 'tickets.index',
+        query: {
+            inbox_id: String(inboxId),
+        },
+    });
+};
+
+const saveInbox = async () => {
+    if (!editingInboxId.value) return;
+
     resetMessages();
 
     try {
-        await api.patch(`/inboxes/${inbox.id}`, {
-            name: inbox.name,
-            is_active: inbox.is_active,
+        await api.patch(`/inboxes/${editingInboxId.value}`, {
+            name: inboxEditForm.name,
+            is_active: inboxEditForm.is_active,
+            operator_ids: (inboxEditForm.operator_ids || []).map((id) => Number(id)),
         });
         success.value = 'Inbox atualizada.';
-        editingInboxId.value = null;
+        closeInboxEditModal();
         await loadBaseData();
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao atualizar inbox.';
@@ -690,12 +799,14 @@ watch(activeTab, (tab) => {
 
 onMounted(loadAll);
 onMounted(() => {
+    document.addEventListener('click', closeInboxOperatorDropdownOnOutsideClick);
     document.addEventListener('click', closeContactEntityDropdownOnOutsideClick);
     document.addEventListener('click', closeContactEditEntityDropdownOnOutsideClick);
     document.addEventListener('click', closeEntityActionsMenuOnOutsideClick);
     document.addEventListener('click', closeContactActionsMenuOnOutsideClick);
 });
 onBeforeUnmount(() => {
+    document.removeEventListener('click', closeInboxOperatorDropdownOnOutsideClick);
     document.removeEventListener('click', closeContactEntityDropdownOnOutsideClick);
     document.removeEventListener('click', closeContactEditEntityDropdownOnOutsideClick);
     document.removeEventListener('click', closeEntityActionsMenuOnOutsideClick);
@@ -741,6 +852,93 @@ onBeforeUnmount(() => {
                     <button type="submit" class="btn-inline">Criar inbox</button>
                 </form>
 
+                <section v-if="showInboxEditModal" class="modal-overlay" @click.self="closeInboxEditModal">
+                    <article class="modal-card">
+                        <header class="modal-header">
+                            <div>
+                                <h3>Editar inbox</h3>
+                                <p class="muted">Atualiza os dados da inbox e os operadores associados.</p>
+                            </div>
+                        </header>
+
+                        <form class="form-grid" @submit.prevent="saveInbox">
+                            <label>Nome <input v-model="inboxEditForm.name" required /></label>
+                            <label class="checkbox"><input v-model="inboxEditForm.is_active" type="checkbox" />Ativa</label>
+
+                            <label class="full">Operadores
+                                <div class="entity-ddl inbox-operators-ddl">
+                                    <button type="button" class="entity-ddl-toggle" @click="toggleInboxOperatorDropdown">
+                                        <span class="entity-ddl-value">{{ inboxOperatorDropdownLabel }}</span>
+                                        <span class="entity-ddl-arrow" :class="{ open: inboxOperatorDropdownOpen }" aria-hidden="true">
+                                            <svg viewBox="0 0 20 20" fill="none">
+                                                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+                                            </svg>
+                                        </span>
+                                    </button>
+
+                                    <div v-if="inboxOperatorDropdownOpen" class="entity-ddl-panel">
+                                        <div class="entity-ddl-search-wrap">
+                                            <input
+                                                v-model="inboxOperatorSearch"
+                                                class="entity-ddl-search"
+                                                type="search"
+                                                placeholder="Pesquisar operadores..."
+                                            />
+                                        </div>
+
+                                        <div class="entity-ddl-list">
+                                            <button
+                                                v-for="operator in filteredInboxOperators"
+                                                :key="`inbox-operator-${operator.id}`"
+                                                type="button"
+                                                class="entity-ddl-option"
+                                                :class="{ selected: isInboxOperatorSelected(operator.id) }"
+                                                @click="toggleInboxOperator(operator.id)"
+                                            >
+                                                <span class="entity-ddl-option-name">
+                                                    {{ operator.name }}
+                                                    <small v-if="!operator.is_active">(inativo)</small>
+                                                </span>
+                                                <span class="entity-ddl-option-check">
+                                                    {{ isInboxOperatorSelected(operator.id) ? '✓' : '' }}
+                                                </span>
+                                            </button>
+
+                                            <p v-if="!filteredInboxOperators.length" class="muted">
+                                                Sem operadores para este filtro.
+                                            </p>
+                                        </div>
+
+                                        <div class="entity-ddl-footer">
+                                            <small>{{ selectedInboxOperators.length }} selecionados</small>
+                                            <button type="button" class="ghost mini-btn" @click="clearInboxOperatorsSelection">
+                                                Limpar
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div v-if="selectedInboxOperators.length" class="entity-ddl-selected">
+                                        <button
+                                            v-for="operator in selectedInboxOperators"
+                                            :key="`selected-inbox-operator-${operator.id}`"
+                                            type="button"
+                                            class="entity-ddl-tag"
+                                            @click="toggleInboxOperator(operator.id)"
+                                        >
+                                            {{ operator.name }}
+                                        </button>
+                                    </div>
+                                </div>
+                            </label>
+
+                            <div class="full modal-actions">
+                                <button type="submit">Guardar alterações</button>
+                                <button type="button" class="ghost" @click="closeInboxEditModal">Cancelar</button>
+                            </div>
+                        </form>
+                    </article>
+                </section>
+
                 <table class="table">
                     <thead>
                         <tr>
@@ -748,19 +946,30 @@ onBeforeUnmount(() => {
                             <th>Ativa</th>
                             <th>Tickets</th>
                             <th>Operadores</th>
-                            <th>Acoes</th>
+                            <th>Ações</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr v-for="item in inboxes" :key="item.id">
-                            <td><input v-model="item.name" :disabled="editingInboxId !== item.id" /></td>
-                            <td><input v-model="item.is_active" type="checkbox" :disabled="editingInboxId !== item.id" /></td>
-                            <td>{{ item.tickets_count }}</td>
-                            <td>{{ item.operators_count }}</td>
+                            <td><span class="cell-text cell-strong" :title="item.name">{{ item.name }}</span></td>
+                            <td>
+                                <span class="status-chip" :class="item.is_active ? 'active' : 'inactive'">
+                                    {{ item.is_active ? 'Ativa' : 'Inativa' }}
+                                </span>
+                            </td>
+                            <td>
+                                <button type="button" class="count-pill count-link" @click="goToInboxTickets(item.id)">
+                                    {{ item.tickets_count }}
+                                </button>
+                            </td>
+                            <td>
+                                <span class="count-pill">{{ item.operators_count }}</span>
+                                <span class="cell-text notes-text" :title="(item.operators || []).map((operator) => operator.name).join(', ') || '-'">
+                                    {{ (item.operators || []).map((operator) => operator.name).join(', ') || '-' }}
+                                </span>
+                            </td>
                             <td class="row-actions">
-                                <button v-if="editingInboxId !== item.id" type="button" @click="editingInboxId = item.id">Editar</button>
-                                <button v-else type="button" @click="saveInbox(item)">Guardar</button>
-                                <button type="button" class="ghost" @click="editingInboxId = null">Cancelar</button>
+                                <button type="button" @click="openInboxEditModal(item)">Editar</button>
                                 <button type="button" class="danger" @click="deleteInbox(item)">Eliminar</button>
                             </td>
                         </tr>
@@ -1493,6 +1702,16 @@ th, td {
     background: #f8fafc;
     border-color: #dbe4ee;
     color: #334155;
+}
+
+.count-link {
+    cursor: pointer;
+}
+
+.count-link:hover {
+    background: #ecfdf5;
+    border-color: #9fd9c2;
+    color: #0f766e;
 }
 
 .error {

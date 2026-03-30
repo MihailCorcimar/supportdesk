@@ -1,8 +1,9 @@
 ﻿<script setup>
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { RouterLink, useRoute, useRouter } from 'vue-router';
 import api from '../api/client';
 
+const route = useRoute();
 const router = useRouter();
 const loading = ref(false);
 const error = ref('');
@@ -11,6 +12,7 @@ const searchInputRef = ref(null);
 const tickets = ref([]);
 const meta = ref({ current_page: 1, last_page: 1, total: 0 });
 const openActionsMenuTicketId = ref(null);
+const showFiltersMenu = ref(false);
 const options = ref({
     inboxes: [],
     entities: [],
@@ -23,6 +25,7 @@ const options = ref({
 const defaultFilters = {
     search: '',
     inbox_id: '',
+    created_by_user_id: '',
     status: '',
     assigned_operator_id: '',
     type: '',
@@ -33,6 +36,20 @@ const defaultFilters = {
 };
 
 const filters = reactive({ ...defaultFilters });
+const activeFilterCount = computed(() => {
+    const keys = ['type', 'inbox_id', 'created_by_user_id', 'status', 'priority', 'entity_id', 'assigned_operator_id'];
+    return keys.reduce((count, key) => (filters[key] ? count + 1 : count), 0);
+});
+const sortByOptions = [
+    { value: 'last_activity_at', label: 'Última atividade' },
+    { value: 'request_date', label: 'Data pedido' },
+    { value: 'ticket_number', label: 'Ticket ID' },
+    { value: 'subject', label: 'Assunto' },
+    { value: 'priority', label: 'Prioridade' },
+    { value: 'status', label: 'Estado' },
+    { value: 'type', label: 'Tipo' },
+    { value: 'client', label: 'Entidade' },
+];
 
 const statusLabels = {
     open: 'Aberto',
@@ -67,6 +84,13 @@ const loadMeta = async () => {
         priorities: response.data.data.priorities ?? [],
         types: response.data.data.types,
     };
+};
+
+const hydrateFiltersFromQuery = () => {
+    const inboxId = typeof route.query.inbox_id === 'string' ? route.query.inbox_id.trim() : '';
+    const createdByUserId = typeof route.query.created_by_user_id === 'string' ? route.query.created_by_user_id.trim() : '';
+    filters.inbox_id = inboxId;
+    filters.created_by_user_id = createdByUserId;
 };
 
 const loadTickets = async (page = 1) => {
@@ -110,7 +134,16 @@ const applyFiltersDebounced = () => {
 const clearFilters = () => {
     Object.assign(filters, defaultFilters);
     openActionsMenuTicketId.value = null;
+    showFiltersMenu.value = false;
     loadTickets(1);
+};
+
+const toggleFiltersMenu = () => {
+    showFiltersMenu.value = !showFiltersMenu.value;
+};
+
+const closeFiltersMenu = () => {
+    showFiltersMenu.value = false;
 };
 
 const toggleSort = (field) => {
@@ -133,6 +166,30 @@ const focusSearch = () => {
     if (searchInputRef.value) {
         searchInputRef.value.focus();
     }
+};
+
+const shouldIgnoreShortcutTarget = (target) => {
+    if (!(target instanceof HTMLElement)) {
+        return false;
+    }
+
+    const tagName = target.tagName.toLowerCase();
+    if (['input', 'textarea', 'select', 'button'].includes(tagName)) {
+        return true;
+    }
+
+    return target.isContentEditable;
+};
+
+const handleGlobalKeydown = (event) => {
+    if (event.defaultPrevented) return;
+    if (event.altKey) return;
+    if (!event.ctrlKey && !event.metaKey) return;
+    if (event.key.toLowerCase() !== 'k') return;
+    if (shouldIgnoreShortcutTarget(event.target)) return;
+
+    event.preventDefault();
+    focusSearch();
 };
 
 const refreshCurrentPage = () => {
@@ -173,6 +230,17 @@ const closeActionsMenuOnOutsideClick = (event) => {
     }
 };
 
+const closeFiltersMenuOnOutsideClick = (event) => {
+    if (!showFiltersMenu.value) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (!target.closest('.filters-menu')) {
+        closeFiltersMenu();
+    }
+};
+
 const goToFirstTicket = async () => {
     if (!tickets.value.length) {
         quickActionMessage.value = 'Sem tickets para abrir';
@@ -205,12 +273,17 @@ const clientLabel = (ticket) => ticket.contact?.name ?? ticket.entity?.name ?? '
 
 onMounted(async () => {
     document.addEventListener('click', closeActionsMenuOnOutsideClick);
+    document.addEventListener('click', closeFiltersMenuOnOutsideClick);
+    document.addEventListener('keydown', handleGlobalKeydown);
+    hydrateFiltersFromQuery();
     await loadMeta();
     await loadTickets(1);
 });
 
 onBeforeUnmount(() => {
     document.removeEventListener('click', closeActionsMenuOnOutsideClick);
+    document.removeEventListener('click', closeFiltersMenuOnOutsideClick);
+    document.removeEventListener('keydown', handleGlobalKeydown);
 });
 </script>
 
@@ -232,65 +305,161 @@ onBeforeUnmount(() => {
                 <label class="search-field">
                     <span class="field-icon">⌕</span>
                     <input ref="searchInputRef" v-model="filters.search" placeholder="Pesquisar" @input="applyFiltersDebounced" />
+                    <kbd class="search-kbd">Ctrl+K</kbd>
                 </label>
 
-                <label class="inline-field">
-                    <span class="field-icon">⌁</span>
-                    <span class="ddl-name">Tipo</span>
-                    <select v-model="filters.type" @change="applyFilters">
-                        <option value="">Todos</option>
-                        <option v-for="type in options.types" :key="type" :value="type">
-                            {{ typeLabels[type] ?? type }}
-                        </option>
-                    </select>
-                </label>
+                <div class="inline-filters">
+                    <label class="inline-field">
+                        <span class="field-icon">⌁</span>
+                        <span class="ddl-name">Tipo</span>
+                        <select v-model="filters.type" @change="applyFilters">
+                            <option value="">Todos</option>
+                            <option v-for="type in options.types" :key="type" :value="type">
+                                {{ typeLabels[type] ?? type }}
+                            </option>
+                        </select>
+                    </label>
 
-                <label class="inline-field">
-                    <span class="field-icon">⌂</span>
-                    <span class="ddl-name">Origem</span>
-                    <select v-model="filters.inbox_id" @change="applyFilters">
-                        <option value="">Todas</option>
-                        <option v-for="inbox in options.inboxes" :key="inbox.id" :value="String(inbox.id)">
-                            {{ inbox.name }}
-                        </option>
-                    </select>
-                </label>
+                    <label class="inline-field">
+                        <span class="field-icon">⌂</span>
+                        <span class="ddl-name">Origem</span>
+                        <select v-model="filters.inbox_id" @change="applyFilters">
+                            <option value="">Todas</option>
+                            <option v-for="inbox in options.inboxes" :key="inbox.id" :value="String(inbox.id)">
+                                {{ inbox.name }}
+                            </option>
+                        </select>
+                    </label>
 
-                <label class="inline-field">
-                    <span class="field-icon">◍</span>
-                    <span class="ddl-name">Estado</span>
-                    <select v-model="filters.status" @change="applyFilters">
-                        <option value="">Todos</option>
-                        <option v-for="status in options.statuses" :key="status" :value="status">
-                            {{ statusLabels[status] ?? status }}
-                        </option>
-                    </select>
-                </label>
+                    <label class="inline-field">
+                        <span class="field-icon">◍</span>
+                        <span class="ddl-name">Estado</span>
+                        <select v-model="filters.status" @change="applyFilters">
+                            <option value="">Todos</option>
+                            <option v-for="status in options.statuses" :key="status" :value="status">
+                                {{ statusLabels[status] ?? status }}
+                            </option>
+                        </select>
+                    </label>
 
-                <label class="inline-field">
-                    <span class="field-icon">⚑</span>
-                    <span class="ddl-name">Prioridade</span>
-                    <select v-model="filters.priority" @change="applyFilters">
-                        <option value="">Todas</option>
-                        <option v-for="priority in options.priorities" :key="priority" :value="priority">
-                            {{ priorityLabels[priority] ?? priority }}
-                        </option>
-                    </select>
-                </label>
+                    <label class="inline-field">
+                        <span class="field-icon">⚑</span>
+                        <span class="ddl-name">Prioridade</span>
+                        <select v-model="filters.priority" @change="applyFilters">
+                            <option value="">Todas</option>
+                            <option v-for="priority in options.priorities" :key="priority" :value="priority">
+                                {{ priorityLabels[priority] ?? priority }}
+                            </option>
+                        </select>
+                    </label>
 
-                <label class="inline-field">
-                    <span class="field-icon">⌘</span>
-                    <span class="ddl-name">Entidade</span>
-                    <select v-model="filters.entity_id" @change="applyFilters">
-                        <option value="">Todas</option>
-                        <option v-for="entity in options.entities" :key="entity.id" :value="String(entity.id)">
-                            {{ entity.name }}
-                        </option>
-                    </select>
-                </label>
+                    <label class="inline-field">
+                        <span class="field-icon">◷</span>
+                        <button type="button" class="link-btn" @click="toggleSort('request_date')">Data pedido</button>
+                    </label>
+                </div>
 
                 <div class="filter-actions">
-                    <button type="button" class="btn-clean" @click="clearFilters">Limpar</button>
+                    <div class="filters-menu">
+                        <button type="button" class="inline-filter-toggle" @click.stop="toggleFiltersMenu">
+                            <svg class="filters-toggle-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                <path d="M3 5h18l-7 8v5l-4 2v-7L3 5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                            <span>Filtros ticket</span>
+                            <span v-if="activeFilterCount" class="filters-count">{{ activeFilterCount }}</span>
+                        </button>
+
+                        <div v-if="showFiltersMenu" class="filters-dropdown" @click.stop>
+                            <header class="filters-dropdown-header">
+                                <h3>Filtros ticket</h3>
+                                <p>Refina a lista com filtros avançados.</p>
+                            </header>
+
+                            <div class="filters-grid">
+                                <label>
+                                    Operador atribuído
+                                    <select v-model="filters.assigned_operator_id" @change="applyFilters">
+                                        <option value="">Todos</option>
+                                        <option v-for="operator in options.operators" :key="operator.id" :value="String(operator.id)">
+                                            {{ operator.name }}
+                                        </option>
+                                    </select>
+                                </label>
+
+                                <label>
+                                    Tipo
+                                    <select v-model="filters.type" @change="applyFilters">
+                                        <option value="">Todos</option>
+                                        <option v-for="type in options.types" :key="`menu-type-${type}`" :value="type">
+                                            {{ typeLabels[type] ?? type }}
+                                        </option>
+                                    </select>
+                                </label>
+
+                                <label>
+                                    Origem
+                                    <select v-model="filters.inbox_id" @change="applyFilters">
+                                        <option value="">Todas</option>
+                                        <option v-for="inbox in options.inboxes" :key="`menu-inbox-${inbox.id}`" :value="String(inbox.id)">
+                                            {{ inbox.name }}
+                                        </option>
+                                    </select>
+                                </label>
+
+                                <label>
+                                    Estado
+                                    <select v-model="filters.status" @change="applyFilters">
+                                        <option value="">Todos</option>
+                                        <option v-for="status in options.statuses" :key="`menu-status-${status}`" :value="status">
+                                            {{ statusLabels[status] ?? status }}
+                                        </option>
+                                    </select>
+                                </label>
+
+                                <label>
+                                    Prioridade
+                                    <select v-model="filters.priority" @change="applyFilters">
+                                        <option value="">Todas</option>
+                                        <option v-for="priority in options.priorities" :key="`menu-priority-${priority}`" :value="priority">
+                                            {{ priorityLabels[priority] ?? priority }}
+                                        </option>
+                                    </select>
+                                </label>
+
+                                <label>
+                                    Entidade
+                                    <select v-model="filters.entity_id" @change="applyFilters">
+                                        <option value="">Todas</option>
+                                        <option v-for="entity in options.entities" :key="entity.id" :value="String(entity.id)">
+                                            {{ entity.name }}
+                                        </option>
+                                    </select>
+                                </label>
+
+                                <label>
+                                    Ordenar por
+                                    <select v-model="filters.sort_by" @change="applyFilters">
+                                        <option v-for="sort in sortByOptions" :key="sort.value" :value="sort.value">
+                                            {{ sort.label }}
+                                        </option>
+                                    </select>
+                                </label>
+
+                                <label>
+                                    Ordem
+                                    <select v-model="filters.sort_dir" @change="applyFilters">
+                                        <option value="desc">Descendente</option>
+                                        <option value="asc">Ascendente</option>
+                                    </select>
+                                </label>
+                            </div>
+
+                            <footer class="filters-dropdown-footer">
+                                <span class="filters-helper">{{ activeFilterCount }} ativos</span>
+                                <button type="button" class="btn-clean filters-clear-btn" @click="clearFilters">Limpar filtros</button>
+                            </footer>
+                        </div>
+                    </div>
                 </div>
             </form>
 
@@ -470,7 +639,7 @@ onBeforeUnmount(() => {
     background: #fff;
     border: 1px solid #d8e1ed;
     border-radius: 14px;
-    overflow: hidden;
+    overflow: visible;
 }
 
 .panel-header {
@@ -529,7 +698,7 @@ h1 {
 
 .filter-bar {
     display: grid;
-    grid-template-columns: 1.6fr repeat(5, minmax(120px, 1fr)) auto;
+    grid-template-columns: minmax(260px, 340px) 1fr auto;
     gap: 0.55rem;
     align-items: center;
     padding: 0.75rem 1rem;
@@ -541,36 +710,73 @@ h1 {
     border: 1px solid #dbe4ee;
     border-radius: 9px;
     background: #fff;
-    min-height: 40px;
+    min-height: 38px;
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 0 0.5rem;
 }
 
-.inline-field {
-    position: relative;
-    min-height: 40px;
+.search-kbd {
+    border: 1px solid #dbe4ee;
+    border-bottom-width: 2px;
+    border-radius: 6px;
+    background: #f8fafc;
+    color: #64748b;
+    font-size: 0.72rem;
+    line-height: 1;
+    padding: 0.12rem 0.28rem;
+}
+
+.inline-filters {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0 0.2rem;
+    gap: 0.88rem;
+    min-width: 0;
+    overflow-x: auto;
+    padding-bottom: 2px;
+}
+
+.inline-field {
+    position: relative;
+    min-height: 34px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    color: #475569;
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
 
 .field-icon {
     color: #64748b;
-    font-size: 1.22rem;
-    width: 26px;
+    font-size: 1rem;
+    width: 16px;
     display: inline-flex;
     justify-content: center;
     align-items: center;
-    font-weight: 600;
+    font-weight: 500;
 }
 
 .ddl-name {
     color: #475569;
-    font-size: 0.82rem;
-    white-space: nowrap;
+    font-size: 0.86rem;
+}
+
+.link-btn {
+    border: none;
+    background: transparent;
+    color: #475569;
+    font: inherit;
+    padding: 0;
+    cursor: pointer;
+}
+
+.inline-field select {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
 }
 
 input,
@@ -589,24 +795,123 @@ select:focus {
     outline: none;
 }
 
-.inline-field select {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    padding: 0;
-    appearance: none;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    background-image: none;
-    opacity: 0;
-    cursor: pointer;
-}
-
 .filter-actions {
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    justify-content: flex-start;
+    flex: 0 0 auto;
+}
+
+.filters-menu {
+    position: relative;
+}
+
+.inline-filter-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border: none;
+    background: transparent;
+    color: #475569;
+    padding: 0.22rem 0.1rem;
+    cursor: pointer;
+}
+
+.filters-toggle-icon {
+    width: 16px;
+    height: 16px;
+}
+
+.filters-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 999px;
+    background: #e8fbf2;
+    border: 1px solid #9fd9c2;
+    color: #0f766e;
+    font-size: 0.78rem;
+    line-height: 1;
+}
+
+.filters-dropdown {
+    position: absolute;
+    top: calc(100% + 0.38rem);
+    right: -0.4rem;
+    z-index: 40;
+    width: min(620px, calc(100vw - 3rem));
+    border: 1px solid #dbe4ee;
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+    padding: 0.85rem;
+}
+
+.filters-dropdown-header {
+    display: grid;
+    gap: 0.12rem;
+    margin-bottom: 0.6rem;
+}
+
+.filters-dropdown-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    color: #0f172a;
+}
+
+.filters-dropdown-header p {
+    margin: 0;
+    color: #64748b;
+    font-size: 0.83rem;
+}
+
+.filters-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.7rem;
+    padding-bottom: 0.5rem;
+}
+
+.filters-grid label {
+    display: grid;
+    gap: 0.24rem;
+    color: #334155;
+    font-size: 0.88rem;
+}
+
+.filters-grid select {
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    padding: 0.42rem 0.55rem;
+    font: inherit;
+    color: #0f172a;
+    background: #fff;
+    width: 100%;
+    appearance: auto;
+    -webkit-appearance: auto;
+    -moz-appearance: auto;
+}
+
+.filters-dropdown-footer {
+    border-top: 1px solid #e7edf6;
+    padding-top: 0.6rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.filters-helper {
+    color: #64748b;
+    font-size: 0.82rem;
+}
+
+.filters-clear-btn {
+    border-color: #cdd8e6;
+    color: #334155;
 }
 
 .table-wrap {
@@ -880,11 +1185,23 @@ select:focus {
 
 @media (max-width: 1280px) {
     .filter-bar {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: 1fr auto;
+        grid-template-areas:
+            'search actions'
+            'filters filters';
+    }
+
+    .search-field {
+        grid-area: search;
+    }
+
+    .inline-filters {
+        grid-area: filters;
     }
 
     .filter-actions {
-        grid-column: 1 / -1;
+        grid-area: actions;
+        justify-content: flex-end;
     }
 
     .quick-actions {
@@ -914,6 +1231,22 @@ select:focus {
 
     .filter-bar {
         grid-template-columns: 1fr;
+        grid-template-areas:
+            'search'
+            'filters'
+            'actions';
+    }
+
+    .filters-dropdown {
+        width: min(420px, calc(100vw - 2.25rem));
+    }
+
+    .filters-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .filter-actions {
+        justify-content: flex-start;
     }
 
     .quick-actions {

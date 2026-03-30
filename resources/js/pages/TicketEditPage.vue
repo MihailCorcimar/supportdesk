@@ -33,6 +33,8 @@ const statusLabels = {
 };
 const priorityLabels = { low: 'Baixa', medium: 'Media', high: 'Alta', urgent: 'Urgente' };
 const typeLabels = { question: 'Questao', incident: 'Incidente', request: 'Pedido', task: 'Tarefa', other: 'Outro' };
+const terminalStatuses = ['closed', 'cancelled'];
+const isTicketTerminal = computed(() => terminalStatuses.includes(ticket.value?.status));
 
 const filteredContacts = computed(() => {
     if (!ticket.value?.available_contacts) return [];
@@ -73,6 +75,15 @@ const save = async () => {
     error.value = '';
 
     try {
+        if (isTicketTerminal.value) {
+            await api.patch(`/tickets/${route.params.id}/status`, {
+                status: form.status,
+            });
+
+            await router.push({ name: 'tickets.show', params: { id: route.params.id } });
+            return;
+        }
+
         await api.patch(`/tickets/${route.params.id}`, {
             subject: form.subject,
             description: form.description,
@@ -108,16 +119,19 @@ onMounted(loadTicket);
 
         <p v-if="loading" class="muted">A carregar...</p>
         <p v-if="error" class="error">{{ error }}</p>
+        <p v-if="!loading && isTicketTerminal" class="warning">
+            Ticket fechado/cancelado: nesta página só é permitido alterar o estado para reabrir.
+        </p>
 
         <form v-if="!loading && ticket" class="card grid" @submit.prevent="save">
             <label class="full">
                 Assunto
-                <input v-model="form.subject" required maxlength="255" />
+                <input v-model="form.subject" required maxlength="255" :disabled="isTicketTerminal" />
             </label>
 
             <label class="full">
                 Descricao
-                <textarea v-model="form.description"></textarea>
+                <textarea v-model="form.description" :disabled="isTicketTerminal"></textarea>
             </label>
 
             <label>
@@ -129,35 +143,35 @@ onMounted(loadTicket);
 
             <label>
                 Prioridade
-                <select v-model="form.priority">
+                <select v-model="form.priority" :disabled="isTicketTerminal">
                     <option v-for="(label, key) in priorityLabels" :key="key" :value="key">{{ label }}</option>
                 </select>
             </label>
 
             <label>
                 Tipo
-                <select v-model="form.type">
+                <select v-model="form.type" :disabled="isTicketTerminal">
                     <option v-for="(label, key) in typeLabels" :key="key" :value="key">{{ label }}</option>
                 </select>
             </label>
 
             <label>
                 Inbox
-                <select v-model="form.inbox_id">
+                <select v-model="form.inbox_id" :disabled="isTicketTerminal">
                     <option v-for="item in ticket.available_inboxes" :key="item.id" :value="String(item.id)">{{ item.name }}</option>
                 </select>
             </label>
 
             <label>
                 Entidade
-                <select v-model="form.entity_id">
+                <select v-model="form.entity_id" :disabled="isTicketTerminal">
                     <option v-for="item in ticket.available_entities" :key="item.id" :value="String(item.id)">{{ item.name }}</option>
                 </select>
             </label>
 
             <label>
                 Contacto
-                <select v-model="form.contact_id">
+                <select v-model="form.contact_id" :disabled="isTicketTerminal">
                     <option value="">Sem contacto</option>
                     <option v-for="item in filteredContacts" :key="item.id" :value="String(item.id)">
                         {{ item.name }} ({{ item.email }})
@@ -167,7 +181,7 @@ onMounted(loadTicket);
 
             <label>
                 Operador atribuido
-                <select v-model="form.assigned_operator_id">
+                <select v-model="form.assigned_operator_id" :disabled="isTicketTerminal">
                     <option value="">Sem atribuicao</option>
                     <option v-for="item in ticket.operators" :key="item.id" :value="String(item.id)">{{ item.name }}</option>
                 </select>
@@ -175,11 +189,13 @@ onMounted(loadTicket);
 
             <label class="full">
                 Conhecimento (emails separados por virgula)
-                <input v-model="form.cc_emails" />
+                <input v-model="form.cc_emails" :disabled="isTicketTerminal" />
             </label>
 
             <div class="actions full">
-                <button type="submit" :disabled="saving">{{ saving ? 'A guardar...' : 'Guardar alteracoes' }}</button>
+                <button type="submit" :disabled="saving">
+                    {{ saving ? 'A guardar...' : (isTicketTerminal ? 'Atualizar estado' : 'Guardar alteracoes') }}
+                </button>
             </div>
         </form>
     </section>
@@ -234,6 +250,14 @@ button {
     border: 1px solid #fecaca;
     background: #fef2f2;
     color: #991b1b;
+    border-radius: 8px;
+    padding: 0.65rem;
+}
+
+.warning {
+    border: 1px solid #fde68a;
+    background: #fffbeb;
+    color: #92400e;
     border-radius: 8px;
     padding: 0.65rem;
 }

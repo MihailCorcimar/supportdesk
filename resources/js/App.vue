@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from './stores/auth';
 
@@ -9,6 +9,7 @@ const auth = useAuthStore();
 
 const user = computed(() => auth.state.user);
 const hideShell = computed(() => Boolean(route.meta?.hideShell));
+const isSidebarOpen = ref(true);
 const mainLinks = computed(() => {
     const links = [
         { id: 'dashboard', label: 'Dashboard', to: { name: 'dashboard' } },
@@ -49,6 +50,10 @@ const logout = async () => {
         await router.push({ name: 'login' });
     }
 };
+
+const toggleSidebar = () => {
+    isSidebarOpen.value = !isSidebarOpen.value;
+};
 </script>
 
 <template>
@@ -58,16 +63,34 @@ const logout = async () => {
         </main>
 
         <template v-else>
-            <aside v-if="user" class="sidebar">
+            <aside v-if="user" :class="['sidebar', { 'sidebar-collapsed': !isSidebarOpen }]">
+                <button
+                    type="button"
+                    class="sidebar-collapse-toggle"
+                    :aria-label="isSidebarOpen ? 'Fechar menu lateral' : 'Abrir menu lateral'"
+                    :aria-expanded="isSidebarOpen"
+                    @click="toggleSidebar"
+                >
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                            :d="isSidebarOpen ? 'M14.5 6.5L9 12l5.5 5.5' : 'M9.5 6.5 15 12l-5.5 5.5'"
+                            stroke="currentColor"
+                            stroke-width="2.2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                        />
+                    </svg>
+                </button>
+
                 <div class="brand-row">
                     <div class="brand-avatar">SD</div>
-                    <div>
+                    <div v-if="isSidebarOpen">
                         <p class="brand-title">Supportdesk</p>
                         <p class="brand-sub">{{ user.role === 'operator' ? 'Operador' : 'Cliente' }}</p>
                     </div>
                 </div>
 
-                <label class="search-box">
+                <label v-if="isSidebarOpen" class="search-box">
                     <input type="text" placeholder="Pesquisar" disabled>
                 </label>
 
@@ -77,6 +100,7 @@ const logout = async () => {
                         :key="link.id"
                         :to="link.to"
                         :class="['sidebar-link', { 'is-active': isLinkActive(link) }]"
+                        :title="link.label"
                     >
                         <span class="link-icon">
                             <svg v-if="link.id === 'dashboard'" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -104,22 +128,22 @@ const logout = async () => {
                                 <path d="M12 4.5v2.2M12 17.3v2.2M4.5 12h2.2M17.3 12h2.2M6.8 6.8l1.6 1.6M15.6 15.6l1.6 1.6M17.2 6.8l-1.6 1.6M8.4 15.6l-1.6 1.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
                             </svg>
                         </span>
-                        <span>{{ link.label }}</span>
+                        <span v-if="isSidebarOpen" class="link-label">{{ link.label }}</span>
                     </RouterLink>
                 </nav>
 
-                <section class="sidebar-section">
+                <section v-if="isSidebarOpen" class="sidebar-section">
                     <p class="section-title">Conversas</p>
                     <ul class="conversation-list">
                         <li v-for="conversation in quickConversations" :key="conversation">{{ conversation }}</li>
                     </ul>
                 </section>
 
-                <div class="sidebar-user-card">
+                <div v-if="isSidebarOpen" class="sidebar-user-card">
                     <p><span>Utilizador</span><strong>{{ user.name }}</strong></p>
                 </div>
 
-                <button type="button" class="sidebar-logout" @click="logout">Terminar sessão</button>
+                <button v-if="isSidebarOpen" type="button" class="sidebar-logout" @click="logout">Terminar sessão</button>
             </aside>
 
             <div class="content-shell">
@@ -205,6 +229,41 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.85rem;
+    transition: width 160ms ease, padding 160ms ease;
+}
+
+.sidebar-collapsed {
+    width: 78px;
+    padding: 0.95rem 0.55rem;
+    align-items: center;
+}
+
+.sidebar-collapse-toggle {
+    position: absolute;
+    top: 48px;
+    right: -16px;
+    width: 32px;
+    height: 32px;
+    border: 1px solid #9fb0ca;
+    border-radius: 999px;
+    background: #f1f5ff;
+    color: #42526d;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 5;
+    box-shadow: 0 8px 16px rgba(15, 23, 42, 0.18);
+}
+
+.sidebar-collapse-toggle:hover {
+    background: #e3ebff;
+    border-color: #7f91b0;
+}
+
+.sidebar-collapse-toggle svg {
+    width: 18px;
+    height: 18px;
 }
 
 .brand-row {
@@ -249,6 +308,7 @@ body {
 .sidebar-menu {
     display: grid;
     gap: 0.35rem;
+    width: 100%;
 }
 
 .sidebar-link,
@@ -290,6 +350,11 @@ body {
 
 .sidebar-link.is-active .link-icon {
     color: var(--brand);
+}
+
+.sidebar-collapsed .sidebar-link {
+    justify-content: center;
+    padding: 0.5rem;
 }
 
 .sidebar-section {
@@ -356,6 +421,8 @@ body {
     border-radius: 16px;
     background: #f5f7fb;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }
 
 .page-content {
@@ -404,6 +471,10 @@ body {
     .content-shell {
         border: none;
         border-radius: 0;
+    }
+
+    .sidebar-toggle {
+        display: none;
     }
 
     .mobile-topbar {

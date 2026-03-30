@@ -7,6 +7,7 @@ use App\Models\Inbox;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class InboxApiController extends Controller
 {
@@ -16,6 +17,7 @@ class InboxApiController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = Inbox::query()
+            ->with(['operators:id,name,is_active'])
             ->withCount(['tickets', 'operators'])
             ->orderBy('name');
 
@@ -78,6 +80,11 @@ class InboxApiController extends Controller
         $validated = $request->validate([
             'name' => ['sometimes', 'required', 'string', 'max:120'],
             'is_active' => ['sometimes', 'boolean'],
+            'operator_ids' => ['sometimes', 'array'],
+            'operator_ids.*' => [
+                'integer',
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'operator')),
+            ],
         ]);
 
         if ($validated === []) {
@@ -94,7 +101,29 @@ class InboxApiController extends Controller
         }
 
         $inbox->save();
-        $inbox->loadCount(['tickets', 'operators']);
+
+        if (array_key_exists('operator_ids', $validated)) {
+            $operatorIds = collect($validated['operator_ids'])
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values();
+
+            $currentManagementFlags = $inbox->operators()
+                ->pluck('inbox_user.can_manage_users', 'users.id')
+                ->map(fn ($value) => (bool) $value);
+
+            $syncData = $operatorIds
+                ->mapWithKeys(fn (int $operatorId) => [
+                    $operatorId => [
+                        'can_manage_users' => (bool) ($currentManagementFlags[$operatorId] ?? false),
+                    ],
+                ])
+                ->all();
+
+            $inbox->operators()->sync($syncData);
+        }
+
+        $inbox->load(['operators:id,name,is_active'])->loadCount(['tickets', 'operators']);
 
         return response()->json([
             'message' => 'Inbox updated successfully.',
@@ -135,6 +164,12 @@ class InboxApiController extends Controller
             'is_active' => (bool) $inbox->is_active,
             'tickets_count' => (int) ($inbox->tickets_count ?? 0),
             'operators_count' => (int) ($inbox->operators_count ?? 0),
+            'operators' => $inbox->operators->map(fn ($operator) => [
+                'id' => $operator->id,
+                'name' => $operator->name,
+                'is_active' => (bool) $operator->is_active,
+                'can_manage_users' => (bool) ($operator->pivot?->can_manage_users ?? false),
+            ])->values()->all(),
         ];
     }
 
