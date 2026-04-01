@@ -1,31 +1,55 @@
 <script setup>
-import { reactive, ref } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
-import { useAuthStore } from '../stores/auth';
+import { computed, reactive, ref } from 'vue';
+import { RouterLink, useRoute, useRouter } from 'vue-router';
+import api from '../api/client';
 
+const route = useRoute();
 const router = useRouter();
-const auth = useAuthStore();
+
+const token = computed(() => {
+    const value = route.query.token;
+    return typeof value === 'string' ? value : '';
+});
 
 const form = reactive({
-    email: '',
+    email: typeof route.query.email === 'string' ? route.query.email : '',
     password: '',
-    remember: false,
+    password_confirmation: '',
 });
 
 const loading = ref(false);
 const error = ref('');
+const success = ref('');
 
 const submit = async () => {
     loading.value = true;
     error.value = '';
+    success.value = '';
+
+    if (!token.value) {
+        error.value = 'Link de recuperação inválido.';
+        loading.value = false;
+        return;
+    }
 
     try {
-        await auth.login(form);
-        await router.push({ name: 'tickets.index' });
+        const response = await api.post('/reset-password', {
+            token: token.value,
+            email: form.email,
+            password: form.password,
+            password_confirmation: form.password_confirmation,
+        });
+
+        success.value = response?.data?.message || 'Palavra-passe atualizada com sucesso.';
+
+        setTimeout(async () => {
+            await router.push({ name: 'login' });
+        }, 800);
     } catch (exception) {
         error.value = exception?.response?.data?.message
             || exception?.response?.data?.errors?.email?.[0]
-            || 'Nao foi possivel autenticar.';
+            || exception?.response?.data?.errors?.password?.[0]
+            || 'Não foi possível redefinir a palavra-passe.';
     } finally {
         loading.value = false;
     }
@@ -34,10 +58,11 @@ const submit = async () => {
 
 <template>
     <section class="auth-card">
-        <h1>Entrar no Supportdesk</h1>
-        <p class="muted">Aplicacao de tickets em Vue + Laravel.</p>
+        <h1>Redefinir palavra-passe</h1>
+        <p class="muted">Define uma nova palavra-passe para entrar no Supportdesk.</p>
 
         <p class="error" v-if="error">{{ error }}</p>
+        <p class="success" v-if="success">{{ success }}</p>
 
         <form @submit.prevent="submit" class="form-grid">
             <label>
@@ -46,27 +71,22 @@ const submit = async () => {
             </label>
 
             <label>
-                Palavra-passe
-                <input v-model="form.password" type="password" required />
+                Nova palavra-passe
+                <input v-model="form.password" type="password" required minlength="8" />
             </label>
 
-            <label class="remember-row">
-                <input v-model="form.remember" type="checkbox" />
-                Manter sessao iniciada
+            <label>
+                Confirmar nova palavra-passe
+                <input v-model="form.password_confirmation" type="password" required minlength="8" />
             </label>
-
-            <div class="links-row">
-                <RouterLink :to="{ name: 'forgot-password' }">Recuperar palavra-passe</RouterLink>
-            </div>
 
             <button type="submit" :disabled="loading">
-                {{ loading ? 'A entrar...' : 'Entrar' }}
+                {{ loading ? 'A atualizar...' : 'Atualizar palavra-passe' }}
             </button>
         </form>
 
         <p class="alt-link">
-            Ainda nao tens conta?
-            <RouterLink :to="{ name: 'register' }">Criar conta</RouterLink>
+            <RouterLink :to="{ name: 'login' }">Voltar ao login</RouterLink>
         </p>
     </section>
 </template>
@@ -97,6 +117,14 @@ h1 {
     padding: 0.6rem;
 }
 
+.success {
+    border: 1px solid #a7f3d0;
+    background: #ecfdf5;
+    color: #065f46;
+    border-radius: 8px;
+    padding: 0.6rem;
+}
+
 .form-grid {
     display: grid;
     gap: 0.8rem;
@@ -116,16 +144,6 @@ input {
     font: inherit;
 }
 
-.remember-row {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-}
-
-.remember-row input {
-    width: auto;
-}
-
 button {
     border: 1px solid #0f766e;
     background: #0f766e;
@@ -142,24 +160,11 @@ button[disabled] {
 
 .alt-link {
     margin: 0.9rem 0 0;
-    color: #475569;
 }
 
 .alt-link a {
     color: #0f766e;
     text-decoration: none;
-    font-weight: 600;
-}
-
-.links-row {
-    display: flex;
-    justify-content: flex-end;
-}
-
-.links-row a {
-    color: #0f766e;
-    text-decoration: none;
-    font-size: 0.9rem;
     font-weight: 600;
 }
 </style>

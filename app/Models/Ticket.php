@@ -126,6 +126,14 @@ class Ticket extends Model
     }
 
     /**
+     * Get in-app notifications linked to this ticket.
+     */
+    public function notifications(): HasMany
+    {
+        return $this->hasMany(UserNotification::class);
+    }
+
+    /**
      * Get the ticket type option.
      */
     public function typeOption(): BelongsTo

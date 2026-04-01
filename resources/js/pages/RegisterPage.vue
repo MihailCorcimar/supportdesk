@@ -7,9 +7,10 @@ const router = useRouter();
 const auth = useAuthStore();
 
 const form = reactive({
+    name: '',
     email: '',
     password: '',
-    remember: false,
+    password_confirmation: '',
 });
 
 const loading = ref(false);
@@ -20,12 +21,13 @@ const submit = async () => {
     error.value = '';
 
     try {
-        await auth.login(form);
+        await auth.register(form);
         await router.push({ name: 'tickets.index' });
     } catch (exception) {
         error.value = exception?.response?.data?.message
             || exception?.response?.data?.errors?.email?.[0]
-            || 'Nao foi possivel autenticar.';
+            || exception?.response?.data?.errors?.password?.[0]
+            || 'Nao foi possivel criar conta.';
     } finally {
         loading.value = false;
     }
@@ -34,12 +36,17 @@ const submit = async () => {
 
 <template>
     <section class="auth-card">
-        <h1>Entrar no Supportdesk</h1>
-        <p class="muted">Aplicacao de tickets em Vue + Laravel.</p>
+        <h1>Criar conta</h1>
+        <p class="muted">Novo utilizador entra como cliente por defeito.</p>
 
         <p class="error" v-if="error">{{ error }}</p>
 
         <form @submit.prevent="submit" class="form-grid">
+            <label>
+                Nome
+                <input v-model="form.name" type="text" required maxlength="255" />
+            </label>
+
             <label>
                 Email
                 <input v-model="form.email" type="email" required />
@@ -47,26 +54,22 @@ const submit = async () => {
 
             <label>
                 Palavra-passe
-                <input v-model="form.password" type="password" required />
+                <input v-model="form.password" type="password" required minlength="8" />
             </label>
 
-            <label class="remember-row">
-                <input v-model="form.remember" type="checkbox" />
-                Manter sessao iniciada
+            <label>
+                Confirmar palavra-passe
+                <input v-model="form.password_confirmation" type="password" required minlength="8" />
             </label>
-
-            <div class="links-row">
-                <RouterLink :to="{ name: 'forgot-password' }">Recuperar palavra-passe</RouterLink>
-            </div>
 
             <button type="submit" :disabled="loading">
-                {{ loading ? 'A entrar...' : 'Entrar' }}
+                {{ loading ? 'A criar conta...' : 'Criar conta' }}
             </button>
         </form>
 
         <p class="alt-link">
-            Ainda nao tens conta?
-            <RouterLink :to="{ name: 'register' }">Criar conta</RouterLink>
+            Ja tens conta?
+            <RouterLink :to="{ name: 'login' }">Entrar</RouterLink>
         </p>
     </section>
 </template>
@@ -116,16 +119,6 @@ input {
     font: inherit;
 }
 
-.remember-row {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-}
-
-.remember-row input {
-    width: auto;
-}
-
 button {
     border: 1px solid #0f766e;
     background: #0f766e;
@@ -148,18 +141,6 @@ button[disabled] {
 .alt-link a {
     color: #0f766e;
     text-decoration: none;
-    font-weight: 600;
-}
-
-.links-row {
-    display: flex;
-    justify-content: flex-end;
-}
-
-.links-row a {
-    color: #0f766e;
-    text-decoration: none;
-    font-size: 0.9rem;
     font-weight: 600;
 }
 </style>

@@ -3,9 +3,17 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Contact;
+use App\Models\Entity;
+use App\Models\User;
+use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class AuthApiController extends Controller
@@ -18,16 +26,60 @@ class AuthApiController extends Controller
         $user = $request->user();
 
         return response()->json([
-            'data' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
-                'role' => $user->role,
-                'is_active' => $user->is_active,
-                'is_admin' => (bool) $user->is_admin,
-                'can_manage_users' => $user->canManageUsers(),
-            ],
+            'data' => $this->serializeUser($user),
         ]);
+    }
+
+    /**
+     * Register a new user account as client.
+     */
+    public function register(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'email', 'max:255', 'unique:users,email'],
+            'password' => ['required', 'string', 'min:8', 'confirmed'],
+        ]);
+
+        $user = DB::transaction(function () use ($validated): User {
+            $normalizedEmail = mb_strtolower(trim((string) $validated['email']));
+
+            $user = User::query()->create([
+                'name' => trim((string) $validated['name']),
+                'email' => $normalizedEmail,
+                'password' => Hash::make((string) $validated['password']),
+                'role' => 'client',
+                'is_active' => true,
+                'is_admin' => false,
+            ]);
+
+            $entity = Entity::query()->create([
+                'type' => 'external',
+                'name' => $user->name,
+                'slug' => $this->generateUniqueEntitySlug($user->name),
+                'email' => $normalizedEmail,
+                'country' => 'PT',
+                'is_active' => true,
+            ]);
+
+            $contact = Contact::query()->create([
+                'user_id' => $user->id,
+                'name' => $user->name,
+                'email' => $normalizedEmail,
+                'is_active' => true,
+            ]);
+
+            $contact->entities()->syncWithoutDetaching([$entity->id]);
+
+            return $user;
+        });
+
+        Auth::login($user);
+        $request->session()->regenerate();
+
+        return response()->json([
+            'data' => $this->serializeUser($user),
+        ], 201);
     }
 
     /**
@@ -61,15 +113,65 @@ class AuthApiController extends Controller
         }
 
         return response()->json([
-            'data' => [
-                'id' => $request->user()->id,
-                'name' => $request->user()->name,
-                'email' => $request->user()->email,
-                'role' => $request->user()->role,
-                'is_active' => $request->user()->is_active,
-                'is_admin' => (bool) $request->user()->is_admin,
-                'can_manage_users' => $request->user()->canManageUsers(),
+            'data' => $this->serializeUser($request->user()),
+        ]);
+    }
+
+    /**
+     * Send a password reset link.
+     */
+    public function forgotPassword(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'email'],
+        ]);
+
+        Password::sendResetLink([
+            'email' => mb_strtolower(trim((string) $validated['email'])),
+        ]);
+
+        return response()->json([
+            'message' => 'Se a conta existir, o link de recuperação foi enviado.',
+        ]);
+    }
+
+    /**
+     * Reset password using token.
+     */
+    public function resetPassword(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'token' => ['required', 'string'],
+            'email' => ['required', 'email'],
+            'password' => ['required', 'string', 'min:8', 'confirmed'],
+            'password_confirmation' => ['required', 'string', 'min:8'],
+        ]);
+
+        $status = Password::reset(
+            [
+                'email' => mb_strtolower(trim((string) $validated['email'])),
+                'password' => (string) $validated['password'],
+                'password_confirmation' => (string) $validated['password_confirmation'],
+                'token' => (string) $validated['token'],
             ],
+            function (User $user, string $password): void {
+                $user->forceFill([
+                    'password' => Hash::make($password),
+                    'remember_token' => Str::random(60),
+                ])->save();
+
+                event(new PasswordReset($user));
+            }
+        );
+
+        if ($status !== Password::PASSWORD_RESET) {
+            throw ValidationException::withMessages([
+                'email' => 'O link de recuperação é inválido ou expirou.',
+            ]);
+        }
+
+        return response()->json([
+            'message' => 'Palavra-passe atualizada com sucesso.',
         ]);
     }
 
@@ -85,5 +187,41 @@ class AuthApiController extends Controller
         return response()->json([
             'message' => 'Session ended.',
         ]);
+    }
+
+    /**
+     * Serialize user for auth payload.
+     *
+     * @return array<string, mixed>
+     */
+    private function serializeUser(User $user): array
+    {
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role' => $user->role,
+            'is_active' => (bool) $user->is_active,
+            'is_admin' => (bool) $user->is_admin,
+            'can_manage_users' => $user->canManageUsers(),
+        ];
+    }
+
+    /**
+     * Generate unique slug for auto-created client entity.
+     */
+    private function generateUniqueEntitySlug(string $name): string
+    {
+        $base = Str::slug($name);
+        $base = $base !== '' ? $base : 'cliente';
+        $slug = $base;
+        $suffix = 2;
+
+        while (Entity::query()->where('slug', $slug)->exists()) {
+            $slug = $base.'-'.$suffix;
+            $suffix++;
+        }
+
+        return $slug;
     }
 }

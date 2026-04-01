@@ -1,31 +1,28 @@
 <script setup>
 import { reactive, ref } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
-import { useAuthStore } from '../stores/auth';
-
-const router = useRouter();
-const auth = useAuthStore();
+import { RouterLink } from 'vue-router';
+import api from '../api/client';
 
 const form = reactive({
     email: '',
-    password: '',
-    remember: false,
 });
 
 const loading = ref(false);
 const error = ref('');
+const success = ref('');
 
 const submit = async () => {
     loading.value = true;
     error.value = '';
+    success.value = '';
 
     try {
-        await auth.login(form);
-        await router.push({ name: 'tickets.index' });
+        const response = await api.post('/forgot-password', form);
+        success.value = response?.data?.message || 'Se a conta existir, enviamos um link de recuperação.';
     } catch (exception) {
         error.value = exception?.response?.data?.message
             || exception?.response?.data?.errors?.email?.[0]
-            || 'Nao foi possivel autenticar.';
+            || 'Não foi possível enviar o link de recuperação.';
     } finally {
         loading.value = false;
     }
@@ -34,10 +31,11 @@ const submit = async () => {
 
 <template>
     <section class="auth-card">
-        <h1>Entrar no Supportdesk</h1>
-        <p class="muted">Aplicacao de tickets em Vue + Laravel.</p>
+        <h1>Recuperar palavra-passe</h1>
+        <p class="muted">Introduz o teu email para receber o link de recuperação.</p>
 
         <p class="error" v-if="error">{{ error }}</p>
+        <p class="success" v-if="success">{{ success }}</p>
 
         <form @submit.prevent="submit" class="form-grid">
             <label>
@@ -45,28 +43,14 @@ const submit = async () => {
                 <input v-model="form.email" type="email" required />
             </label>
 
-            <label>
-                Palavra-passe
-                <input v-model="form.password" type="password" required />
-            </label>
-
-            <label class="remember-row">
-                <input v-model="form.remember" type="checkbox" />
-                Manter sessao iniciada
-            </label>
-
-            <div class="links-row">
-                <RouterLink :to="{ name: 'forgot-password' }">Recuperar palavra-passe</RouterLink>
-            </div>
-
             <button type="submit" :disabled="loading">
-                {{ loading ? 'A entrar...' : 'Entrar' }}
+                {{ loading ? 'A enviar...' : 'Enviar link' }}
             </button>
         </form>
 
         <p class="alt-link">
-            Ainda nao tens conta?
-            <RouterLink :to="{ name: 'register' }">Criar conta</RouterLink>
+            Lembraste da palavra-passe?
+            <RouterLink :to="{ name: 'login' }">Entrar</RouterLink>
         </p>
     </section>
 </template>
@@ -97,6 +81,14 @@ h1 {
     padding: 0.6rem;
 }
 
+.success {
+    border: 1px solid #a7f3d0;
+    background: #ecfdf5;
+    color: #065f46;
+    border-radius: 8px;
+    padding: 0.6rem;
+}
+
 .form-grid {
     display: grid;
     gap: 0.8rem;
@@ -114,16 +106,6 @@ input {
     border-radius: 8px;
     padding: 0.55rem 0.62rem;
     font: inherit;
-}
-
-.remember-row {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-}
-
-.remember-row input {
-    width: auto;
 }
 
 button {
@@ -148,18 +130,6 @@ button[disabled] {
 .alt-link a {
     color: #0f766e;
     text-decoration: none;
-    font-weight: 600;
-}
-
-.links-row {
-    display: flex;
-    justify-content: flex-end;
-}
-
-.links-row a {
-    color: #0f766e;
-    text-decoration: none;
-    font-size: 0.9rem;
     font-weight: 600;
 }
 </style>

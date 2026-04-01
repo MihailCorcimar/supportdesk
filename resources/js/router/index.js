@@ -1,13 +1,18 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import LoginPage from '../pages/LoginPage.vue';
+import RegisterPage from '../pages/RegisterPage.vue';
+import ForgotPasswordPage from '../pages/ForgotPasswordPage.vue';
+import ResetPasswordPage from '../pages/ResetPasswordPage.vue';
 import AcceptInvitePage from '../pages/AcceptInvitePage.vue';
 import DashboardPage from '../pages/DashboardPage.vue';
+import NotificationsPage from '../pages/NotificationsPage.vue';
 import ManagementPage from '../pages/ManagementPage.vue';
 import TicketsListPage from '../pages/TicketsListPage.vue';
 import TicketCreatePage from '../pages/TicketCreatePage.vue';
 import TicketEditPage from '../pages/TicketEditPage.vue';
 import TicketShowPage from '../pages/TicketShowPage.vue';
 import UsersManagementPage from '../pages/UsersManagementPage.vue';
+import UserDetailsPage from '../pages/UserDetailsPage.vue';
 import { useAuthStore } from '../stores/auth';
 
 const routes = [
@@ -15,6 +20,24 @@ const routes = [
         path: '/login',
         name: 'login',
         component: LoginPage,
+        meta: { guestOnly: true, hideShell: true },
+    },
+    {
+        path: '/register',
+        name: 'register',
+        component: RegisterPage,
+        meta: { guestOnly: true, hideShell: true },
+    },
+    {
+        path: '/forgot-password',
+        name: 'forgot-password',
+        component: ForgotPasswordPage,
+        meta: { guestOnly: true, hideShell: true },
+    },
+    {
+        path: '/reset-password',
+        name: 'reset-password',
+        component: ResetPasswordPage,
         meta: { guestOnly: true, hideShell: true },
     },
     {
@@ -40,9 +63,21 @@ const routes = [
         meta: { requiresAuth: true },
     },
     {
+        path: '/notifications',
+        name: 'notifications.index',
+        component: NotificationsPage,
+        meta: { requiresAuth: true },
+    },
+    {
         path: '/users',
         name: 'users.index',
         component: UsersManagementPage,
+        meta: { requiresAuth: true, requiresUserManager: true },
+    },
+    {
+        path: '/users/:id',
+        name: 'users.show',
+        component: UserDetailsPage,
         meta: { requiresAuth: true, requiresUserManager: true },
     },
     {

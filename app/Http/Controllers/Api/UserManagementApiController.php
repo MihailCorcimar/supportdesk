@@ -66,8 +66,7 @@ class UserManagementApiController extends Controller
 
         $query = User::query()
             ->withCount(['createdTickets as tickets_count'])
-            ->with(['accessibleInboxes:id,name', 'contacts.entities:id,name'])
-            ->orderBy('name');
+            ->with(['accessibleInboxes:id,name', 'contacts.entities:id,name']);
 
         $query->where(function (Builder $inner) use ($manageableInboxIds): void {
             $inner->where('role', 'client')
@@ -96,6 +95,8 @@ class UserManagementApiController extends Controller
             $query->where('is_active', $request->boolean('is_active'));
         }
 
+        $this->applySorting($query, $request);
+
         $users = $query->paginate($request->integer('per_page', 20));
 
         return response()->json([
@@ -105,6 +106,58 @@ class UserManagementApiController extends Controller
                 'last_page' => $users->lastPage(),
                 'per_page' => $users->perPage(),
                 'total' => $users->total(),
+            ],
+        ]);
+    }
+
+    /**
+     * Show one user details for management.
+     */
+    public function show(Request $request, User $user): JsonResponse
+    {
+        $actor = $request->user();
+        $this->assertCanManageTargetUser($actor, $user);
+
+        $user->load([
+            'accessibleInboxes:id,name',
+            'contacts.entities:id,name',
+        ]);
+        $user->loadCount([
+            'createdTickets as tickets_count',
+            'assignedTickets as assigned_tickets_count',
+            'contacts as contacts_count',
+        ]);
+
+        $recentCreatedTickets = $user->createdTickets()
+            ->with(['inbox:id,name', 'entity:id,name'])
+            ->orderByDesc('id')
+            ->limit(10)
+            ->get()
+            ->map(fn ($ticket) => [
+                'id' => $ticket->id,
+                'ticket_number' => $ticket->ticket_number,
+                'subject' => $ticket->subject,
+                'status' => $ticket->status,
+                'priority' => $ticket->priority,
+                'inbox' => $ticket->inbox ? [
+                    'id' => $ticket->inbox->id,
+                    'name' => $ticket->inbox->name,
+                ] : null,
+                'entity' => $ticket->entity ? [
+                    'id' => $ticket->entity->id,
+                    'name' => $ticket->entity->name,
+                ] : null,
+                'created_at' => optional($ticket->created_at)->toIso8601String(),
+            ])
+            ->values()
+            ->all();
+
+        return response()->json([
+            'data' => [
+                ...$this->serializeUser($user),
+                'assigned_tickets_count' => (int) ($user->assigned_tickets_count ?? 0),
+                'contacts_count' => (int) ($user->contacts_count ?? 0),
+                'recent_created_tickets' => $recentCreatedTickets,
             ],
         ]);
     }
@@ -481,6 +534,35 @@ class UserManagementApiController extends Controller
 
         $contact->save();
         $contact->entities()->syncWithoutDetaching([$entity->id]);
+    }
+
+    /**
+     * Apply users list sorting.
+     */
+    private function applySorting(Builder $query, Request $request): void
+    {
+        $allowedSortBy = [
+            'name',
+            'email',
+            'role',
+            'is_active',
+            'tickets_count',
+        ];
+
+        $sortBy = trim((string) $request->string('sort_by', 'name'));
+        $sortDir = strtolower(trim((string) $request->string('sort_dir', 'asc'))) === 'desc' ? 'desc' : 'asc';
+
+        if (! in_array($sortBy, $allowedSortBy, true)) {
+            $sortBy = 'name';
+        }
+
+        $query->orderBy($sortBy, $sortDir);
+
+        if ($sortBy !== 'name') {
+            $query->orderBy('name', 'asc');
+        }
+
+        $query->orderBy('id', 'asc');
     }
 
     /**

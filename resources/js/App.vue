@@ -1,6 +1,7 @@
-﻿<script setup>
-import { computed, ref } from 'vue';
+<script setup>
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import api from './api/client';
 import { useAuthStore } from './stores/auth';
 
 const route = useRoute();
@@ -10,10 +11,17 @@ const auth = useAuthStore();
 const user = computed(() => auth.state.user);
 const hideShell = computed(() => Boolean(route.meta?.hideShell));
 const isSidebarOpen = ref(true);
+const notificationUnreadCount = ref(0);
+const pinnedConversations = ref([]);
+const recentConversations = ref([]);
+const conversationsLoading = ref(false);
+const pinPendingIds = ref([]);
+
 const mainLinks = computed(() => {
     const links = [
         { id: 'dashboard', label: 'Dashboard', to: { name: 'dashboard' } },
         { id: 'tickets', label: 'Tickets', to: { name: 'tickets.index' } },
+        { id: 'notifications', label: 'Notificações', to: { name: 'notifications.index' } },
     ];
 
     if (user.value?.can_manage_users) {
@@ -25,12 +33,6 @@ const mainLinks = computed(() => {
     return links;
 });
 
-const quickConversations = [
-    '#TC-192 produção',
-    '#TC-191 pagamento',
-    '#TC-188 contrato',
-];
-
 const isLinkActive = (link) => {
     if (link.id === 'entities') {
         return route.name === 'management' && route.query.tab === 'entities';
@@ -40,13 +42,81 @@ const isLinkActive = (link) => {
         return route.name === 'management' && route.query.tab !== 'entities';
     }
 
+    if (link.id === 'users') {
+        return String(route.name || '').startsWith('users.');
+    }
+
     return route.name === link.to.name;
+};
+
+const loadRecentConversations = async () => {
+    if (!user.value) {
+        pinnedConversations.value = [];
+        recentConversations.value = [];
+        return;
+    }
+
+    conversationsLoading.value = true;
+
+    try {
+        const response = await api.get('/conversations', {
+            params: {
+                limit: 6,
+            },
+        });
+
+        const payload = response.data?.data || {};
+        pinnedConversations.value = payload.pinned || [];
+        recentConversations.value = payload.recent || [];
+    } catch {
+        pinnedConversations.value = [];
+        recentConversations.value = [];
+    } finally {
+        conversationsLoading.value = false;
+    }
+};
+
+const isPinPending = (ticketId) => pinPendingIds.value.includes(ticketId);
+
+const toggleConversationPin = async (conversation) => {
+    if (!conversation?.id || isPinPending(conversation.id)) {
+        return;
+    }
+
+    pinPendingIds.value.push(conversation.id);
+
+    try {
+        if (conversation.is_pinned) {
+            await api.delete(`/conversations/${conversation.id}/pin`);
+        } else {
+            await api.post(`/conversations/${conversation.id}/pin`);
+        }
+
+        await loadRecentConversations();
+    } finally {
+        pinPendingIds.value = pinPendingIds.value.filter((id) => id !== conversation.id);
+    }
+};
+
+const loadNotificationUnreadCount = async () => {
+    if (!user.value) {
+        notificationUnreadCount.value = 0;
+        return;
+    }
+
+    try {
+        const response = await api.get('/notifications/unread-count');
+        notificationUnreadCount.value = Number(response.data?.data?.unread_count || 0);
+    } catch {
+        notificationUnreadCount.value = 0;
+    }
 };
 
 const logout = async () => {
     try {
         await auth.logout();
     } finally {
+        notificationUnreadCount.value = 0;
         await router.push({ name: 'login' });
     }
 };
@@ -54,6 +124,37 @@ const logout = async () => {
 const toggleSidebar = () => {
     isSidebarOpen.value = !isSidebarOpen.value;
 };
+
+const onNotificationsUpdated = () => {
+    loadNotificationUnreadCount();
+};
+
+watch(
+    () => user.value?.id,
+    () => {
+        loadNotificationUnreadCount();
+        loadRecentConversations();
+    },
+    { immediate: true }
+);
+
+watch(
+    () => route.fullPath,
+    () => {
+        if (user.value) {
+            loadNotificationUnreadCount();
+            loadRecentConversations();
+        }
+    }
+);
+
+onMounted(() => {
+    window.addEventListener('supportdesk:notifications-updated', onNotificationsUpdated);
+});
+
+onUnmounted(() => {
+    window.removeEventListener('supportdesk:notifications-updated', onNotificationsUpdated);
+});
 </script>
 
 <template>
@@ -113,6 +214,10 @@ const toggleSidebar = () => {
                                 <path d="M5 7.5A2.5 2.5 0 0 1 7.5 5h9A2.5 2.5 0 0 1 19 7.5v2a1.5 1.5 0 1 0 0 3v2A2.5 2.5 0 0 1 16.5 17h-9A2.5 2.5 0 0 1 5 14.5v-2a1.5 1.5 0 1 0 0-3v-2Z" stroke="currentColor" stroke-width="1.8" />
                                 <path d="M12 8v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="1.6 2.2" />
                             </svg>
+                            <svg v-else-if="link.id === 'notifications'" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                <path d="M7 10a5 5 0 1 1 10 0v4l1.6 1.7a1 1 0 0 1-.73 1.7H6.13a1 1 0 0 1-.73-1.7L7 14v-4Z" stroke="currentColor" stroke-width="1.8" />
+                                <path d="M10 18a2 2 0 0 0 4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                            </svg>
                             <svg v-else-if="link.id === 'users'" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                                 <circle cx="9" cy="8" r="3" stroke="currentColor" stroke-width="1.8" />
                                 <path d="M3.5 18a5.5 5.5 0 0 1 11 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
@@ -129,13 +234,74 @@ const toggleSidebar = () => {
                             </svg>
                         </span>
                         <span v-if="isSidebarOpen" class="link-label">{{ link.label }}</span>
+                        <span
+                            v-if="isSidebarOpen && link.id === 'notifications' && notificationUnreadCount > 0"
+                            class="link-badge"
+                        >
+                            {{ notificationUnreadCount > 99 ? '99+' : notificationUnreadCount }}
+                        </span>
                     </RouterLink>
                 </nav>
 
                 <section v-if="isSidebarOpen" class="sidebar-section">
                     <p class="section-title">Conversas</p>
+                    <p v-if="pinnedConversations.length" class="section-subtitle">Fixadas</p>
                     <ul class="conversation-list">
-                        <li v-for="conversation in quickConversations" :key="conversation">{{ conversation }}</li>
+                        <li v-if="conversationsLoading" class="conversation-empty">A carregar...</li>
+                        <li
+                            v-for="conversation in pinnedConversations"
+                            :key="`pinned-${conversation.id}`"
+                            class="conversation-item"
+                        >
+                            <RouterLink
+                                :to="{ name: 'tickets.show', params: { id: conversation.id } }"
+                                class="conversation-link"
+                            >
+                                <span class="conversation-code">#{{ conversation.ticket_number }}</span>
+                                <span class="conversation-subject">{{ conversation.subject }}</span>
+                            </RouterLink>
+                            <button
+                                type="button"
+                                class="pin-toggle is-pinned"
+                                :disabled="isPinPending(conversation.id)"
+                                title="Desafixar conversa"
+                                @click.stop.prevent="toggleConversationPin(conversation)"
+                            >
+                                Unpin
+                            </button>
+                        </li>
+                    </ul>
+
+                    <p v-if="recentConversations.length" class="section-subtitle">Recentes</p>
+                    <ul class="conversation-list">
+                        <li
+                            v-for="conversation in recentConversations"
+                            :key="`recent-${conversation.id}`"
+                            class="conversation-item"
+                        >
+                            <RouterLink
+                                :to="{ name: 'tickets.show', params: { id: conversation.id } }"
+                                class="conversation-link"
+                            >
+                                <span class="conversation-code">#{{ conversation.ticket_number }}</span>
+                                <span class="conversation-subject">{{ conversation.subject }}</span>
+                            </RouterLink>
+                            <button
+                                type="button"
+                                class="pin-toggle"
+                                :disabled="isPinPending(conversation.id)"
+                                title="Fixar conversa"
+                                @click.stop.prevent="toggleConversationPin(conversation)"
+                            >
+                                Pin
+                            </button>
+                        </li>
+                        <li
+                            v-if="!conversationsLoading && !pinnedConversations.length && !recentConversations.length"
+                            class="conversation-empty"
+                        >
+                            Sem conversas recentes
+                        </li>
                     </ul>
                 </section>
 
@@ -341,6 +507,21 @@ body {
     height: 100%;
 }
 
+.link-badge {
+    margin-left: auto;
+    min-width: 21px;
+    height: 21px;
+    padding: 0 0.35rem;
+    border-radius: 999px;
+    background: #d21f3c;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
 .sidebar-link.is-active,
 .mobile-menu a.is-active {
     background: #e9f9f1;
@@ -372,6 +553,14 @@ body {
     letter-spacing: 0.04em;
 }
 
+.section-subtitle {
+    margin: 0.35rem 0;
+    font-size: 0.7rem;
+    color: #7a8ba3;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
 .conversation-list {
     list-style: none;
     margin: 0;
@@ -380,13 +569,82 @@ body {
     gap: 0.35rem;
 }
 
-.conversation-list li {
+.conversation-item {
+    margin: 0;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.35rem;
+    align-items: center;
+}
+
+.conversation-link {
     border: 1px solid #e8edf5;
     background: #fafcff;
     border-radius: 8px;
     padding: 0.34rem 0.48rem;
-    font-size: 0.82rem;
+    text-decoration: none;
     color: #334155;
+    display: grid;
+    gap: 0.08rem;
+}
+
+.conversation-link:hover {
+    border-color: #c9d8ea;
+    background: #f3f8ff;
+}
+
+.pin-toggle {
+    border: 1px solid #d7e0ec;
+    background: #f8fbff;
+    border-radius: 8px;
+    min-width: 48px;
+    height: 32px;
+    padding: 0 0.45rem;
+    cursor: pointer;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #60758f;
+}
+
+.pin-toggle:hover {
+    border-color: #b9c8db;
+    background: #eef5ff;
+}
+
+.pin-toggle.is-pinned {
+    border-color: #a5d8bf;
+    background: #eaf9f1;
+    color: #0f8f62;
+}
+
+.pin-toggle:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.conversation-code {
+    font-size: 0.82rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.conversation-subject {
+    font-size: 0.76rem;
+    color: #5f6d80;
+    line-height: 1.2;
+}
+
+.conversation-empty {
+    border: 1px dashed #d6deea;
+    background: #fbfdff;
+    border-radius: 8px;
+    padding: 0.4rem 0.48rem;
+    font-size: 0.78rem;
+    color: #6b7a90;
 }
 
 .sidebar-user-card {
@@ -486,3 +744,6 @@ body {
     }
 }
 </style>
+
+
+

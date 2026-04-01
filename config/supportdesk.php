@@ -15,6 +15,24 @@ return [
             'ticket_assignment_updated' => env('SUPPORTDESK_SUBJECT_TICKET_ASSIGNMENT', '[Supportdesk] Assignment updated on ticket {ticket_number}'),
             'ticket_status_updated' => env('SUPPORTDESK_SUBJECT_TICKET_STATUS', '[Supportdesk] Status updated on ticket {ticket_number}'),
         ],
+        'templates' => [
+            'ticket_created' => [
+                'title' => 'Ticket created',
+                'body' => "Ticket {ticket_number} was created.\nSubject: {subject}\nStatus: {status}\nPriority: {priority}",
+            ],
+            'ticket_replied' => [
+                'title' => 'New ticket reply',
+                'body' => "A new reply was added on ticket {ticket_number}.\nAuthor: {author_name}\nPreview: {message_preview}",
+            ],
+            'ticket_assignment_updated' => [
+                'title' => 'Ticket assignment updated',
+                'body' => "Assignment on ticket {ticket_number} was updated.\nCurrent operator: {assigned_operator}",
+            ],
+            'ticket_status_updated' => [
+                'title' => 'Ticket status updated',
+                'body' => "Status of ticket {ticket_number} was updated.\nCurrent status: {status}",
+            ],
+        ],
     ],
 
     'sla' => [

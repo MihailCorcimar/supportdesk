@@ -269,7 +269,8 @@ const formatDate = (value) => {
     });
 };
 
-const clientLabel = (ticket) => ticket.contact?.name ?? ticket.entity?.name ?? '-';
+const entityLabel = (ticket) => ticket.entity?.name ?? '-';
+const creatorLabel = (ticket) => ticket.creator_user?.name ?? ticket.creator_contact?.name ?? '-';
 
 onMounted(async () => {
     document.addEventListener('click', closeActionsMenuOnOutsideClick);
@@ -501,6 +502,7 @@ onBeforeUnmount(() => {
                                     Entidade <span class="sort-indicator" :class="`is-${sortState('client')}`"></span>
                                 </button>
                             </th>
+                            <th>Autor</th>
                             <th>
                                 <button type="button" class="sort-btn" @click="toggleSort('request_date')">
                                     Data pedido <span class="sort-indicator" :class="`is-${sortState('request_date')}`"></span>
@@ -535,7 +537,8 @@ onBeforeUnmount(() => {
                             <td>
                                 <span class="type-pill">{{ typeLabels[ticket.type] ?? ticket.type }}</span>
                             </td>
-                            <td>{{ clientLabel(ticket) }}</td>
+                            <td>{{ entityLabel(ticket) }}</td>
+                            <td>{{ creatorLabel(ticket) }}</td>
                             <td>{{ formatDate(ticket.created_at ?? ticket.last_activity_at) }}</td>
                             <td class="actions-col">
                                 <div class="actions-menu">
@@ -571,7 +574,7 @@ onBeforeUnmount(() => {
                             </td>
                         </tr>
                         <tr v-if="!tickets.length">
-                            <td colspan="9" class="empty-row">Sem tickets para os filtros escolhidos.</td>
+                            <td colspan="10" class="empty-row">Sem tickets para os filtros escolhidos.</td>
                         </tr>
                     </tbody>
                 </table>

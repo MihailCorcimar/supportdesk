@@ -38,7 +38,7 @@ class TicketApiController extends Controller
         $user = $request->user();
 
         $ticketsQuery = Ticket::query()
-            ->with(['inbox', 'entity', 'contact', 'assignedOperator']);
+            ->with(['inbox', 'entity', 'contact', 'assignedOperator', 'creatorUser', 'creatorContact']);
 
         $this->applyVisibilityScope($ticketsQuery, $user);
         $this->applyFilters($ticketsQuery, $request);
@@ -1162,6 +1162,8 @@ class TicketApiController extends Controller
             'inbox' => $ticket->inbox ? ['id' => $ticket->inbox->id, 'name' => $ticket->inbox->name] : null,
             'entity' => $ticket->entity ? ['id' => $ticket->entity->id, 'name' => $ticket->entity->name] : null,
             'contact' => $ticket->contact ? ['id' => $ticket->contact->id, 'name' => $ticket->contact->name, 'email' => $ticket->contact->email] : null,
+            'creator_user' => $ticket->creatorUser ? ['id' => $ticket->creatorUser->id, 'name' => $ticket->creatorUser->name] : null,
+            'creator_contact' => $ticket->creatorContact ? ['id' => $ticket->creatorContact->id, 'name' => $ticket->creatorContact->name, 'email' => $ticket->creatorContact->email] : null,
             'assigned_operator' => $ticket->assignedOperator ? ['id' => $ticket->assignedOperator->id, 'name' => $ticket->assignedOperator->name] : null,
         ];
     }

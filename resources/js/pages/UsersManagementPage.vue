@@ -15,6 +15,9 @@ const entities = ref([]);
 const canSetAdmin = ref(false);
 const search = ref('');
 const roleFilter = ref('');
+const sortBy = ref('name');
+const sortDir = ref('asc');
+const showFiltersMenu = ref(false);
 const showCreateUserModal = ref(false);
 
 const createForm = reactive({
@@ -34,6 +37,19 @@ const editingInboxIds = ref([]);
 const editingManagerInboxIds = ref([]);
 const latestInviteUrl = ref('');
 const openActionsMenuUserId = ref(null);
+const activeFilterCount = computed(() => {
+    let count = 0;
+
+    if (search.value.trim() !== '') {
+        count += 1;
+    }
+
+    if (roleFilter.value) {
+        count += 1;
+    }
+
+    return count;
+});
 
 const isOperatorForm = computed(() => createForm.role === 'operator');
 
@@ -55,8 +71,39 @@ const fetchUsers = async () => {
         params.role = roleFilter.value;
     }
 
+    params.sort_by = sortBy.value;
+    params.sort_dir = sortDir.value;
+
     const response = await api.get('/users', { params });
     users.value = response.data.data;
+};
+
+const toggleSort = async (field) => {
+    if (sortBy.value === field) {
+        sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc';
+    } else {
+        sortBy.value = field;
+        sortDir.value = field === 'name' || field === 'email' ? 'asc' : 'desc';
+    }
+
+    await fetchUsers();
+};
+
+const sortState = (field) => {
+    if (sortBy.value !== field) return 'none';
+    return sortDir.value === 'asc' ? 'asc' : 'desc';
+};
+
+const accessSummary = (user) => {
+    if (user.role === 'operator') {
+        if (!user.inboxes?.length) return 'Sem inboxes';
+
+        return user.inboxes
+            .map((inbox) => `${inbox.name}${inbox.can_manage_users ? ' (gest\u00E3o)' : ''}`)
+            .join(' | ');
+    }
+
+    return user.primary_contact?.entity?.name || 'Sem entidade';
 };
 
 const load = async () => {
@@ -67,7 +114,7 @@ const load = async () => {
         await fetchMeta();
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Não foi possível carregar utilizadores.';
+        error.value = exception?.response?.data?.message || 'N\u00E3o foi poss\u00EDvel carregar utilizadores.';
     } finally {
         loading.value = false;
     }
@@ -142,6 +189,37 @@ const closeActionsMenuOnOutsideClick = (event) => {
     }
 };
 
+const toggleFiltersMenu = () => {
+    showFiltersMenu.value = !showFiltersMenu.value;
+};
+
+const closeFiltersMenu = () => {
+    showFiltersMenu.value = false;
+};
+
+const closeFiltersMenuOnOutsideClick = (event) => {
+    if (!showFiltersMenu.value) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (!target.closest('.user-filters-menu')) {
+        closeFiltersMenu();
+    }
+};
+
+const applyUsersFilters = async () => {
+    await fetchUsers();
+    closeFiltersMenu();
+};
+
+const clearUsersFilters = async () => {
+    search.value = '';
+    roleFilter.value = '';
+    await fetchUsers();
+    closeFiltersMenu();
+};
+
 const createUser = async () => {
     saving.value = true;
     error.value = '';
@@ -176,7 +254,7 @@ const createUser = async () => {
     } catch (exception) {
         error.value = exception?.response?.data?.message
             || Object.values(exception?.response?.data?.errors || {})?.[0]?.[0]
-            || 'Não foi possível criar o utilizador.';
+            || 'N\u00E3o foi poss\u00EDvel criar o utilizador.';
     } finally {
         saving.value = false;
     }
@@ -194,7 +272,7 @@ const toggleActive = async (user) => {
         success.value = 'Estado do utilizador atualizado.';
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Não foi possível atualizar o utilizador.';
+        error.value = exception?.response?.data?.message || 'N\u00E3o foi poss\u00EDvel atualizar o utilizador.';
     }
 };
 const toggleAdmin = async (user) => {
@@ -206,10 +284,10 @@ const toggleAdmin = async (user) => {
             is_admin: !user.is_admin,
         });
 
-        success.value = 'Permissão de admin atualizada.';
+        success.value = 'Permiss\u00E3o de admin atualizada.';
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Não foi possível atualizar permissão de admin.';
+        error.value = exception?.response?.data?.message || 'N\u00E3o foi poss\u00EDvel atualizar permiss\u00E3o de admin.';
     }
 };
 
@@ -268,7 +346,7 @@ const saveInboxes = async (user) => {
         closeInboxEditor();
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Não foi possível atualizar acessos.';
+        error.value = exception?.response?.data?.message || 'N\u00E3o foi poss\u00EDvel atualizar acessos.';
     }
 };
 
@@ -281,7 +359,7 @@ const regenerateInvite = async (user) => {
         latestInviteUrl.value = response.data.data.url;
         success.value = 'Novo convite gerado com sucesso.';
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Não foi possível gerar convite.';
+        error.value = exception?.response?.data?.message || 'N\u00E3o foi poss\u00EDvel gerar convite.';
     }
 };
 
@@ -298,7 +376,7 @@ const deleteUser = async (user) => {
         success.value = 'Utilizador eliminado com sucesso.';
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'Não foi possível eliminar utilizador.';
+        error.value = exception?.response?.data?.message || 'N\u00E3o foi poss\u00EDvel eliminar utilizador.';
     }
 };
 
@@ -313,18 +391,20 @@ const goToUserTickets = async (user) => {
 
 onMounted(() => {
     document.addEventListener('click', closeActionsMenuOnOutsideClick);
+    document.addEventListener('click', closeFiltersMenuOnOutsideClick);
     load();
 });
 
 onBeforeUnmount(() => {
     document.removeEventListener('click', closeActionsMenuOnOutsideClick);
+    document.removeEventListener('click', closeFiltersMenuOnOutsideClick);
 });
 </script>
 
 <template>
     <section class="page">
         <header>
-            <h1>Gestão de Utilizadores</h1>
+            <h1>Gest&atilde;o de Utilizadores</h1>
             <p class="muted">Criar operadores/clientes, gerir acessos a inboxes e gerar convites.</p>
         </header>
 
@@ -391,7 +471,7 @@ onBeforeUnmount(() => {
                         </div>
 
                         <div class="full-row">
-                            <p class="field-label">Permissão para gerir utilizadores (por inbox)</p>
+                            <p class="field-label">Permiss\u00E3o para gerir utilizadores (por inbox)</p>
                             <div class="checks">
                                 <label v-for="inbox in manageableInboxes" :key="`manager-${inbox.id}`">
                                     <input
@@ -441,32 +521,93 @@ onBeforeUnmount(() => {
         <article class="card" v-if="!loading">
             <div class="toolbar">
                 <h2>Lista de utilizadores</h2>
-                <div class="toolbar-fields">
-                    <input v-model="search" placeholder="Procurar por nome ou email" @keyup.enter="fetchUsers" />
-                    <select v-model="roleFilter" @change="fetchUsers">
-                        <option value="">Todos os perfis</option>
-                        <option value="operator">Operadores</option>
-                        <option value="client">Clientes</option>
-                    </select>
-                    <button type="button" @click="fetchUsers">Filtrar</button>
+                <div class="user-filters-menu">
+                    <button type="button" class="user-filter-toggle" @click.stop="toggleFiltersMenu">
+                        <svg class="user-filters-toggle-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path d="M3 5h18l-7 8v5l-4 2v-7L3 5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                        <span>Filtros utilizadores</span>
+                        <span v-if="activeFilterCount" class="user-filters-count">{{ activeFilterCount }}</span>
+                    </button>
+
+                    <div v-if="showFiltersMenu" class="user-filters-dropdown" @click.stop>
+                        <header class="user-filters-dropdown-header">
+                            <h3>Filtros utilizadores</h3>
+                            <p>Refina a lista por pesquisa e perfil.</p>
+                        </header>
+
+                        <div class="user-filters-grid">
+                            <label>
+                                Pesquisa
+                                <input
+                                    v-model="search"
+                                    placeholder="Procurar por nome ou email"
+                                    @keyup.enter="applyUsersFilters"
+                                />
+                            </label>
+
+                            <label>
+                                Perfil
+                                <select v-model="roleFilter">
+                                    <option value="">Todos os perfis</option>
+                                    <option value="operator">Operadores</option>
+                                    <option value="client">Clientes</option>
+                                </select>
+                            </label>
+                        </div>
+
+                        <footer class="user-filters-footer">
+                            <span class="user-filters-helper">{{ activeFilterCount }} ativos</span>
+                            <div class="user-filters-actions">
+                                <button type="button" class="ghost user-filters-clear-btn" @click="clearUsersFilters">
+                                    Limpar
+                                </button>
+                                <button type="button" @click="applyUsersFilters">Filtrar</button>
+                            </div>
+                        </footer>
+                    </div>
                 </div>
             </div>
 
             <table class="table">
                 <thead>
                     <tr>
-                        <th>Nome</th>
-                        <th>Email</th>
-                        <th>Perfil</th>
-                        <th>Estado</th>
-                        <th>Tickets</th>
+                        <th>
+                            <button type="button" class="sort-btn" @click="toggleSort('name')">
+                                Nome <span class="sort-indicator" :class="`is-${sortState('name')}`"></span>
+                            </button>
+                        </th>
+                        <th>
+                            <button type="button" class="sort-btn" @click="toggleSort('email')">
+                                Email <span class="sort-indicator" :class="`is-${sortState('email')}`"></span>
+                            </button>
+                        </th>
+                        <th>
+                            <button type="button" class="sort-btn" @click="toggleSort('role')">
+                                Perfil <span class="sort-indicator" :class="`is-${sortState('role')}`"></span>
+                            </button>
+                        </th>
+                        <th>
+                            <button type="button" class="sort-btn" @click="toggleSort('is_active')">
+                                Estado <span class="sort-indicator" :class="`is-${sortState('is_active')}`"></span>
+                            </button>
+                        </th>
+                        <th>
+                            <button type="button" class="sort-btn" @click="toggleSort('tickets_count')">
+                                Tickets <span class="sort-indicator" :class="`is-${sortState('tickets_count')}`"></span>
+                            </button>
+                        </th>
                         <th>Acessos</th>
-                        <th>Ações</th>
+                        <th>A&ccedil;&otilde;es</th>
                     </tr>
                 </thead>
                 <tbody>
                     <tr v-for="user in users" :key="user.id">
-                        <td>{{ user.name }}</td>
+                        <td>
+                            <RouterLink class="user-name-link" :to="{ name: 'users.show', params: { id: user.id } }">
+                                {{ user.name }}
+                            </RouterLink>
+                        </td>
                         <td>{{ user.email }}</td>
                         <td>{{ user.role === 'operator' ? (user.is_admin ? 'Operador admin' : 'Operador') : 'Cliente' }}</td>
                         <td>{{ user.is_active ? 'Ativo' : 'Inativo' }}</td>
@@ -475,29 +616,20 @@ onBeforeUnmount(() => {
                                 {{ user.tickets_count ?? 0 }}
                             </button>
                         </td>
-                        <td>
-                            <template v-if="user.role === 'operator'">
-                                <span v-if="user.inboxes.length === 0" class="muted">Sem inboxes</span>
-                                <ul v-else class="flat-list">
-                                    <li v-for="inbox in user.inboxes" :key="`user-${user.id}-inbox-${inbox.id}`">
-                                        {{ inbox.name }}
-                                        <small v-if="inbox.can_manage_users">(gestão)</small>
-                                    </li>
-                                </ul>
-                            </template>
-                            <template v-else>
-                                <span class="muted">{{ user.primary_contact?.entity?.name || 'Sem entidade' }}</span>
-                            </template>
+                        <td class="access-cell">
+                            <span class="access-summary" :title="accessSummary(user)">
+                                {{ accessSummary(user) }}
+                            </span>
                         </td>
                         <td>
                             <div class="actions-menu">
                                 <button
                                     type="button"
                                     class="ghost menu-trigger"
-                                    aria-label="Abrir ações"
+                                    aria-label="Abrir A&ccedil;&otilde;es"
                                     @click.stop="toggleActionsMenu(user.id)"
                                 >
-                                    ⋯
+                                    &#8943;
                                 </button>
                                 <div
                                     v-if="openActionsMenuUserId === user.id"
@@ -549,7 +681,7 @@ onBeforeUnmount(() => {
                                     </label>
                                 </div>
 
-                                <p class="field-label">Permissão de gestão de utilizadores</p>
+                                <p class="field-label">Permiss\u00E3o de gest\u00E3o de utilizadores</p>
                                 <div class="checks">
                                     <label v-for="inbox in manageableInboxes" :key="`edit-manager-${user.id}-${inbox.id}`">
                                         <input
@@ -702,6 +834,17 @@ button.danger {
     color: #0f766e;
 }
 
+.user-name-link {
+    color: #0f172a;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.user-name-link:hover {
+    color: #0f766e;
+    text-decoration: underline;
+}
+
 .checkbox-line {
     display: flex;
     align-items: center;
@@ -795,10 +938,119 @@ button.danger {
     flex-wrap: wrap;
 }
 
-.toolbar-fields {
+.user-filters-menu {
+    position: relative;
+}
+
+.user-filter-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.42rem;
+    border: none;
+    background: transparent;
+    color: #475569;
+    padding: 0.25rem 0.1rem;
+    cursor: pointer;
+}
+
+.user-filters-toggle-icon {
+    width: 16px;
+    height: 16px;
+}
+
+.user-filters-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 999px;
+    background: #e8fbf2;
+    border: 1px solid #9fd9c2;
+    color: #0f766e;
+    font-size: 0.78rem;
+    line-height: 1;
+}
+
+.user-filters-dropdown {
+    position: absolute;
+    top: calc(100% + 0.38rem);
+    right: -0.35rem;
+    z-index: 40;
+    width: min(560px, calc(100vw - 3rem));
+    border: 1px solid #dbe4ee;
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+    padding: 0.85rem;
+}
+
+.user-filters-dropdown-header {
+    display: grid;
+    gap: 0.12rem;
+    margin-bottom: 0.6rem;
+}
+
+.user-filters-dropdown-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    color: #0f172a;
+}
+
+.user-filters-dropdown-header p {
+    margin: 0;
+    color: #64748b;
+    font-size: 0.83rem;
+}
+
+.user-filters-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.7rem;
+    padding-bottom: 0.5rem;
+}
+
+.user-filters-grid label {
+    display: grid;
+    gap: 0.24rem;
+    color: #334155;
+    font-size: 0.88rem;
+}
+
+.user-filters-grid input,
+.user-filters-grid select {
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    padding: 0.42rem 0.55rem;
+    font: inherit;
+    color: #0f172a;
+    background: #fff;
+    width: 100%;
+}
+
+.user-filters-footer {
+    border-top: 1px solid #e7edf6;
+    padding-top: 0.6rem;
     display: flex;
-    gap: 0.55rem;
-    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.user-filters-helper {
+    color: #64748b;
+    font-size: 0.82rem;
+}
+
+.user-filters-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.user-filters-clear-btn {
+    border-color: #cdd8e6;
+    color: #334155;
 }
 
 .table {
@@ -811,7 +1063,76 @@ td {
     border-bottom: 1px solid #e2e8f0;
     text-align: left;
     padding: 0.6rem;
-    vertical-align: top;
+    vertical-align: middle;
+}
+
+.sort-btn {
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    overflow: visible;
+}
+
+.sort-indicator {
+    display: inline-flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 1px;
+    width: 9px;
+    margin-left: 0.08rem;
+}
+
+.sort-indicator::before,
+.sort-indicator::after {
+    content: '';
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+}
+
+.sort-indicator::before {
+    border-bottom: 5px solid #94a3b8;
+}
+
+.sort-indicator::after {
+    border-top: 5px solid #94a3b8;
+}
+
+.sort-indicator.is-asc::before {
+    border-bottom-color: #334155;
+}
+
+.sort-indicator.is-asc::after {
+    border-top-color: #cbd5e1;
+}
+
+.sort-indicator.is-desc::before {
+    border-bottom-color: #cbd5e1;
+}
+
+.sort-indicator.is-desc::after {
+    border-top-color: #334155;
+}
+
+.access-cell {
+    max-width: 320px;
+}
+
+.access-summary {
+    display: block;
+    max-width: 320px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #334155;
 }
 
 .flat-list {
@@ -890,6 +1211,15 @@ td {
 
 @media (max-width: 960px) {
     .grid {
+        grid-template-columns: 1fr;
+    }
+
+    .user-filters-dropdown {
+        right: 0;
+        width: min(420px, calc(100vw - 2.5rem));
+    }
+
+    .user-filters-grid {
         grid-template-columns: 1fr;
     }
 

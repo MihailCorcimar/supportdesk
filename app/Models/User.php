@@ -184,4 +184,22 @@ class User extends Authenticatable
     {
         return $this->hasMany(TicketLog::class, 'actor_user_id');
     }
+
+    /**
+     * Get in-app notifications for this user.
+     */
+    public function notifications(): HasMany
+    {
+        return $this->hasMany(UserNotification::class);
+    }
+
+    /**
+     * Get tickets pinned by this user in sidebar.
+     */
+    public function pinnedTickets(): BelongsToMany
+    {
+        return $this->belongsToMany(Ticket::class, 'user_pinned_tickets')
+            ->withPivot(['position'])
+            ->withTimestamps();
+    }
 }

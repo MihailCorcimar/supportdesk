@@ -9,7 +9,7 @@ const router = useRouter();
 const loading = ref(true);
 const error = ref('');
 const success = ref('');
-const allowedTabs = ['inboxes', 'entities', 'contacts', 'logs'];
+const allowedTabs = ['inboxes', 'entities', 'contacts', 'notifications', 'logs'];
 const normalizeTab = (tab) => (allowedTabs.includes(tab) ? tab : 'inboxes');
 const activeTab = ref(normalizeTab(typeof route.query.tab === 'string' ? route.query.tab : 'inboxes'));
 
@@ -19,6 +19,9 @@ const contacts = ref([]);
 const contactFunctions = ref([]);
 const users = ref([]);
 const logs = ref([]);
+const notificationTemplates = ref([]);
+const notificationPlaceholders = ref([]);
+const savingNotificationEventKey = ref('');
 
 const inboxForm = reactive({ name: '', is_active: true });
 const inboxEditForm = reactive({
@@ -203,7 +206,14 @@ const tabLabel = {
     inboxes: 'Inboxes',
     entities: 'Entidades',
     contacts: 'Contactos',
+    notifications: 'Notificacoes',
     logs: 'Ticket logs',
+};
+const notificationEventLabel = {
+    ticket_created: 'Ticket criado',
+    ticket_replied: 'Nova resposta',
+    ticket_assignment_updated: 'Atribuicao atualizada',
+    ticket_status_updated: 'Estado atualizado',
 };
 let logSearchDebounceTimer = null;
 
@@ -233,12 +243,19 @@ const loadLogs = async () => {
     logs.value = response.data.data;
 };
 
+const loadNotificationTemplates = async () => {
+    const response = await api.get('/notification-templates');
+    notificationTemplates.value = response.data.data || [];
+    notificationPlaceholders.value = response.data.meta?.placeholders || [];
+};
+
 const loadAll = async () => {
     loading.value = true;
     error.value = '';
 
     try {
         await loadBaseData();
+        await loadNotificationTemplates();
         await loadLogs();
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Nao foi possivel carregar configuracao.';
@@ -751,6 +768,36 @@ const refreshLogs = async () => {
     }
 };
 
+const saveNotificationTemplate = async (template) => {
+    if (!template?.event_key) return;
+
+    resetMessages();
+    savingNotificationEventKey.value = template.event_key;
+
+    try {
+        const response = await api.patch(`/notification-templates/${template.event_key}`, {
+            subject_template: template.subject_template,
+            title_template: template.title_template,
+            body_template: template.body_template,
+            is_enabled: Boolean(template.is_enabled),
+        });
+
+        const updatedTemplate = response?.data?.data;
+        if (updatedTemplate) {
+            const index = notificationTemplates.value.findIndex((item) => item.event_key === updatedTemplate.event_key);
+            if (index !== -1) {
+                notificationTemplates.value[index] = updatedTemplate;
+            }
+        }
+
+        success.value = 'Template de notificacao atualizado.';
+    } catch (exception) {
+        error.value = exception?.response?.data?.message || 'Falha ao atualizar template de notificacao.';
+    } finally {
+        savingNotificationEventKey.value = '';
+    }
+};
+
 const applyLogFiltersInstantly = () => {
     if (logSearchDebounceTimer) {
         clearTimeout(logSearchDebounceTimer);
@@ -822,7 +869,7 @@ onBeforeUnmount(() => {
         <header class="header-row">
             <div>
                 <h1>Configuracao operacional</h1>
-                <p class="muted">CRUD de inboxes, entidades, contactos e consulta dedicada de ticket logs.</p>
+                <p class="muted">CRUD de inboxes, entidades, contactos, templates de notificacao e consulta dedicada de ticket logs.</p>
             </div>
         </header>
 
@@ -1433,6 +1480,62 @@ onBeforeUnmount(() => {
                 </table>
             </template>
 
+            <template v-if="!loading && activeTab === 'notifications'">
+                <h2>Notificacoes por email</h2>
+                <p class="muted">
+                    Configura assunto, titulo e corpo para cada evento de notificacao.
+                </p>
+                <p v-if="notificationPlaceholders.length" class="muted placeholders-help">
+                    Variaveis: {{ notificationPlaceholders.join(', ') }}
+                </p>
+
+                <div class="notification-template-grid">
+                    <article
+                        v-for="template in notificationTemplates"
+                        :key="template.event_key"
+                        class="notification-template-card"
+                    >
+                        <header class="notification-template-header">
+                            <h3>{{ notificationEventLabel[template.event_key] || template.event_key }}</h3>
+                            <label class="checkbox">
+                                <input v-model="template.is_enabled" type="checkbox" />
+                                Ativa
+                            </label>
+                        </header>
+
+                        <form
+                            class="form-grid notification-template-form"
+                            @submit.prevent="saveNotificationTemplate(template)"
+                        >
+                            <label class="full">
+                                Assunto
+                                <input v-model="template.subject_template" maxlength="255" required />
+                            </label>
+                            <label class="full">
+                                Titulo
+                                <input v-model="template.title_template" maxlength="255" required />
+                            </label>
+                            <label class="full">
+                                Corpo
+                                <textarea v-model="template.body_template" rows="5" required></textarea>
+                            </label>
+                            <div class="full notification-template-actions">
+                                <button
+                                    type="submit"
+                                    :disabled="savingNotificationEventKey === template.event_key"
+                                >
+                                    {{ savingNotificationEventKey === template.event_key ? 'A guardar...' : 'Guardar template' }}
+                                </button>
+                            </div>
+                        </form>
+                    </article>
+
+                    <p v-if="!notificationTemplates.length" class="muted">
+                        Sem templates de notificacao para configurar.
+                    </p>
+                </div>
+            </template>
+
             <template v-if="!loading && activeTab === 'logs'">
                 <h2>Ticket logs</h2>
                 <form class="filters" @submit.prevent>
@@ -1515,6 +1618,51 @@ h1, h2 { margin: 0; }
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.6rem;
+}
+
+.notification-template-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.85rem;
+}
+
+.notification-template-card {
+    border: 1px solid #dbe4ee;
+    border-radius: 12px;
+    background: #f8fafc;
+    padding: 0.85rem;
+    display: grid;
+    gap: 0.65rem;
+}
+
+.notification-template-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+}
+
+.notification-template-header h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.notification-template-form {
+    grid-template-columns: 1fr;
+}
+
+.notification-template-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.notification-template-actions button[disabled] {
+    opacity: 0.75;
+    cursor: wait;
+}
+
+.placeholders-help {
+    font-size: 0.92rem;
 }
 
 label { display: grid; gap: 0.25rem; color: #334155; }
@@ -1939,6 +2087,8 @@ th, td {
 @media (max-width: 960px) {
     .form-grid,
     .filters { grid-template-columns: 1fr; }
+
+    .notification-template-grid { grid-template-columns: 1fr; }
 
     .table,
     .table thead,

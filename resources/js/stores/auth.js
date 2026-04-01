@@ -23,6 +23,11 @@ export function useAuthStore() {
         await fetchUser();
     };
 
+    const register = async (payload) => {
+        await api.post('/register', payload);
+        await fetchUser();
+    };
+
     const logout = async () => {
         await api.post('/logout');
         state.user = null;
@@ -32,6 +37,7 @@ export function useAuthStore() {
         state,
         fetchUser,
         login,
+        register,
         logout,
     };
 }
