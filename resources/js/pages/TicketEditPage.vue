@@ -22,7 +22,9 @@ const form = reactive({
     contact_id: '',
     assigned_operator_id: '',
     cc_emails: '',
+    follower_user_ids: [],
 });
+const followerSearch = ref('');
 
 const statusLabels = {
     open: 'Aberto',
@@ -44,6 +46,22 @@ const filteredContacts = computed(() => {
         (contact) => Array.isArray(contact.entity_ids) && contact.entity_ids.includes(Number(form.entity_id)),
     );
 });
+const filteredFollowers = computed(() => {
+    const term = followerSearch.value.trim().toLowerCase();
+    const followers = ticket.value?.available_followers || [];
+
+    if (!term) return followers;
+
+    return followers.filter((follower) => {
+        const name = (follower.name || '').toLowerCase();
+        const email = (follower.email || '').toLowerCase();
+        return name.includes(term) || email.includes(term);
+    });
+});
+const selectedFollowers = computed(() => {
+    const selected = new Set((form.follower_user_ids || []).map((id) => Number(id)));
+    return (ticket.value?.available_followers || []).filter((follower) => selected.has(Number(follower.id)));
+});
 
 const loadTicket = async () => {
     loading.value = true;
@@ -63,6 +81,7 @@ const loadTicket = async () => {
         form.contact_id = ticket.value.contact?.id ? String(ticket.value.contact.id) : '';
         form.assigned_operator_id = ticket.value.assigned_operator?.id ? String(ticket.value.assigned_operator.id) : '';
         form.cc_emails = (ticket.value.cc_emails || []).join(', ');
+        form.follower_user_ids = (ticket.value.followers || []).map((follower) => Number(follower.id));
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Nao foi possivel carregar ticket para edicao.';
     } finally {
@@ -95,6 +114,7 @@ const save = async () => {
             contact_id: form.contact_id ? Number(form.contact_id) : null,
             assigned_operator_id: form.assigned_operator_id ? Number(form.assigned_operator_id) : null,
             cc_emails: form.cc_emails,
+            follower_user_ids: form.follower_user_ids,
         });
 
         await router.push({ name: 'tickets.show', params: { id: route.params.id } });
@@ -108,6 +128,27 @@ const save = async () => {
 };
 
 onMounted(loadTicket);
+
+const toggleFollower = (id) => {
+    const normalizedId = Number(id);
+    const current = (form.follower_user_ids || []).map((item) => Number(item));
+
+    if (current.includes(normalizedId)) {
+        form.follower_user_ids = current.filter((item) => item !== normalizedId);
+        return;
+    }
+
+    form.follower_user_ids = [...current, normalizedId];
+};
+
+const removeFollower = (id) => {
+    const normalizedId = Number(id);
+    form.follower_user_ids = (form.follower_user_ids || [])
+        .map((item) => Number(item))
+        .filter((item) => item !== normalizedId);
+};
+
+const followerRoleLabel = (role) => (role === 'operator' ? 'Operador' : 'Cliente');
 </script>
 
 <template>
@@ -192,6 +233,37 @@ onMounted(loadTicket);
                 <input v-model="form.cc_emails" :disabled="isTicketTerminal" />
             </label>
 
+            <label class="full" v-if="!isTicketTerminal">
+                Seguidores (utilizadores)
+                <div class="followers-picker">
+                    <input
+                        v-model="followerSearch"
+                        type="search"
+                        placeholder="Pesquisar utilizador por nome ou email"
+                    />
+
+                    <div class="followers-list">
+                        <label v-for="follower in filteredFollowers" :key="follower.id" class="follower-item">
+                            <input
+                                type="checkbox"
+                                :checked="form.follower_user_ids.map((id) => Number(id)).includes(Number(follower.id))"
+                                @change="toggleFollower(follower.id)"
+                            />
+                            <span>{{ follower.name }}</span>
+                            <small>{{ followerRoleLabel(follower.role) }}</small>
+                        </label>
+                        <p v-if="!filteredFollowers.length" class="followers-empty">Sem resultados.</p>
+                    </div>
+
+                    <div v-if="selectedFollowers.length" class="followers-tags">
+                        <span v-for="follower in selectedFollowers" :key="`edit-follow-${follower.id}`" class="follower-tag">
+                            {{ follower.name }}
+                            <button type="button" @click="removeFollower(follower.id)">×</button>
+                        </span>
+                    </div>
+                </div>
+            </label>
+
             <div class="actions full">
                 <button type="submit" :disabled="saving">
                     {{ saving ? 'A guardar...' : (isTicketTerminal ? 'Atualizar estado' : 'Guardar alteracoes') }}
@@ -263,6 +335,73 @@ button {
 }
 
 .muted { color: #475569; }
+
+.followers-picker {
+    border: 1px solid #dbe4ee;
+    border-radius: 10px;
+    padding: 0.55rem;
+    display: grid;
+    gap: 0.45rem;
+    background: #f8fbff;
+}
+
+.followers-list {
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    background: #fff;
+    max-height: 180px;
+    overflow: auto;
+}
+
+.follower-item {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.36rem 0.5rem;
+    border-bottom: 1px solid #eef2f7;
+}
+
+.follower-item:last-child {
+    border-bottom: 0;
+}
+
+.follower-item small {
+    color: #64748b;
+}
+
+.followers-empty {
+    margin: 0;
+    padding: 0.6rem;
+    color: #64748b;
+}
+
+.followers-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.follower-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px solid #b9ccdf;
+    border-radius: 999px;
+    background: #eff6ff;
+    color: #0f172a;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.8rem;
+}
+
+.follower-tag button {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    line-height: 1;
+    cursor: pointer;
+    color: #475569;
+}
 
 @media (max-width: 900px) {
     .grid { grid-template-columns: 1fr; }

@@ -2,9 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import api from '../api/client';
+import { useAuthStore } from '../stores/auth';
 
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
 const loading = ref(false);
 const error = ref('');
 const quickActionMessage = ref('');
@@ -13,6 +15,7 @@ const tickets = ref([]);
 const meta = ref({ current_page: 1, last_page: 1, total: 0 });
 const openActionsMenuTicketId = ref(null);
 const showFiltersMenu = ref(false);
+const pinPendingIds = ref([]);
 const options = ref({
     inboxes: [],
     entities: [],
@@ -21,6 +24,7 @@ const options = ref({
     priorities: [],
     types: [],
 });
+const canManageUsers = computed(() => Boolean(auth.state.user?.can_manage_users));
 
 const defaultFilters = {
     search: '',
@@ -205,6 +209,36 @@ const closeActionsMenu = () => {
     openActionsMenuTicketId.value = null;
 };
 
+const isPinPending = (ticketId) => pinPendingIds.value.includes(ticketId);
+
+const toggleTicketPin = async (ticket) => {
+    if (!ticket?.id || isPinPending(ticket.id)) {
+        return;
+    }
+
+    closeActionsMenu();
+    pinPendingIds.value.push(ticket.id);
+
+    try {
+        if (ticket.is_pinned) {
+            await api.delete(`/conversations/${ticket.id}/pin`);
+        } else {
+            await api.post(`/conversations/${ticket.id}/pin`);
+        }
+
+        ticket.is_pinned = !ticket.is_pinned;
+        quickActionMessage.value = ticket.is_pinned ? 'Ticket fixado' : 'Ticket desafixado';
+        window.dispatchEvent(new CustomEvent('supportdesk:conversations-updated'));
+    } catch {
+        quickActionMessage.value = 'Não foi possível atualizar pin';
+    } finally {
+        pinPendingIds.value = pinPendingIds.value.filter((id) => id !== ticket.id);
+        setTimeout(() => {
+            quickActionMessage.value = '';
+        }, 1400);
+    }
+};
+
 const openTicketView = async (ticketId, tab = 'conversation') => {
     closeActionsMenu();
     await router.push({
@@ -271,6 +305,14 @@ const formatDate = (value) => {
 
 const entityLabel = (ticket) => ticket.entity?.name ?? '-';
 const creatorLabel = (ticket) => ticket.creator_user?.name ?? ticket.creator_contact?.name ?? '-';
+const entityLinkTarget = (ticket) => {
+    if (!canManageUsers.value || !ticket.entity?.id) return null;
+    return { name: 'entities.show', params: { id: ticket.entity.id } };
+};
+const creatorLinkTarget = (ticket) => {
+    if (!canManageUsers.value || !ticket.creator_user?.id) return null;
+    return { name: 'users.show', params: { id: ticket.creator_user.id } };
+};
 
 onMounted(async () => {
     document.addEventListener('click', closeActionsMenuOnOutsideClick);
@@ -537,11 +579,45 @@ onBeforeUnmount(() => {
                             <td>
                                 <span class="type-pill">{{ typeLabels[ticket.type] ?? ticket.type }}</span>
                             </td>
-                            <td>{{ entityLabel(ticket) }}</td>
-                            <td>{{ creatorLabel(ticket) }}</td>
+                            <td>
+                                <RouterLink
+                                    v-if="entityLinkTarget(ticket)"
+                                    class="table-ref-link"
+                                    :to="entityLinkTarget(ticket)"
+                                >
+                                    {{ entityLabel(ticket) }}
+                                </RouterLink>
+                                <span v-else>{{ entityLabel(ticket) }}</span>
+                            </td>
+                            <td>
+                                <RouterLink
+                                    v-if="creatorLinkTarget(ticket)"
+                                    class="table-ref-link"
+                                    :to="creatorLinkTarget(ticket)"
+                                >
+                                    {{ creatorLabel(ticket) }}
+                                </RouterLink>
+                                <span v-else>{{ creatorLabel(ticket) }}</span>
+                            </td>
                             <td>{{ formatDate(ticket.created_at ?? ticket.last_activity_at) }}</td>
                             <td class="actions-col">
-                                <div class="actions-menu">
+                                <div class="row-actions">
+                                    <button
+                                        type="button"
+                                        class="btn-clean row-action row-pin-btn"
+                                        :class="{ 'is-pinned': ticket.is_pinned }"
+                                        :disabled="isPinPending(ticket.id)"
+                                        :title="ticket.is_pinned ? 'Desafixar ticket' : 'Fixar ticket'"
+                                        :aria-label="ticket.is_pinned ? 'Desafixar ticket' : 'Fixar ticket'"
+                                        @click.stop="toggleTicketPin(ticket)"
+                                    >
+                                        <svg class="row-pin-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                            <path d="M9 4h6l-1.2 5.2 3.2 2.8v1.2H7v-1.2l3.2-2.8L9 4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+                                            <path d="M12 13v7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                                        </svg>
+                                    </button>
+
+                                    <div class="actions-menu">
                                     <button
                                         type="button"
                                         class="btn-clean row-action menu-trigger"
@@ -569,7 +645,11 @@ onBeforeUnmount(() => {
                                         <button type="button" class="menu-item" @click="openTicketEditor(ticket.id)">
                                             Editar
                                         </button>
+                                        <button type="button" class="menu-item" @click="toggleTicketPin(ticket)">
+                                            {{ ticket.is_pinned ? 'Desafixar' : 'Fixar' }}
+                                        </button>
                                     </div>
+                                </div>
                                 </div>
                             </td>
                         </tr>
@@ -1005,7 +1085,7 @@ select:focus {
 }
 
 .actions-col {
-    width: 82px;
+    width: 120px;
     text-align: center;
 }
 
@@ -1027,6 +1107,17 @@ select:focus {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.table-ref-link {
+    color: #0f172a;
+    text-decoration: none;
+    border-bottom: 1px dashed #94a3b8;
+}
+
+.table-ref-link:hover {
+    color: #0f766e;
+    border-bottom-color: #0f766e;
 }
 
 .priority-pill,
@@ -1067,6 +1158,39 @@ select:focus {
 .actions-menu {
     position: relative;
     display: inline-flex;
+}
+
+.row-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.row-pin-btn {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 999px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #60758f;
+}
+
+.row-pin-icon {
+    width: 16px;
+    height: 16px;
+    transition: transform 0.18s ease;
+}
+
+.row-pin-btn.is-pinned {
+    border-color: #a5d8bf;
+    background: #eaf9f1;
+    color: #0f8f62;
+}
+
+.row-pin-btn.is-pinned .row-pin-icon {
+    transform: rotate(-16deg);
 }
 
 .menu-trigger {

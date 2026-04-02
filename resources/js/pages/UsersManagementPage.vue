@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import api from '../api/client';
+import UserEditModal from '../components/UserEditModal.vue';
 
 const router = useRouter();
 const loading = ref(true);
@@ -19,6 +20,7 @@ const sortBy = ref('name');
 const sortDir = ref('asc');
 const showFiltersMenu = ref(false);
 const showCreateUserModal = ref(false);
+const showEditUserModal = ref(false);
 
 const createForm = reactive({
     name: '',
@@ -32,9 +34,17 @@ const createForm = reactive({
     is_admin: false,
 });
 
-const editingInboxesUserId = ref(null);
-const editingInboxIds = ref([]);
-const editingManagerInboxIds = ref([]);
+const editUserId = ref(null);
+const editUserRole = ref('operator');
+const editForm = reactive({
+    name: '',
+    email: '',
+    is_active: true,
+    is_admin: false,
+    contact_name: '',
+    inbox_ids: [],
+    manager_inbox_ids: [],
+});
 const latestInviteUrl = ref('');
 const openActionsMenuUserId = ref(null);
 const activeFilterCount = computed(() => {
@@ -52,6 +62,8 @@ const activeFilterCount = computed(() => {
 });
 
 const isOperatorForm = computed(() => createForm.role === 'operator');
+const isOperatorEditForm = computed(() => editUserRole.value === 'operator');
+const isClientEditForm = computed(() => editUserRole.value === 'client');
 
 const fetchMeta = async () => {
     const response = await api.get('/users/meta');
@@ -291,62 +303,107 @@ const toggleAdmin = async (user) => {
     }
 };
 
-const openInboxEditor = (user) => {
-    editingInboxesUserId.value = user.id;
-    editingInboxIds.value = user.inboxes.map((inbox) => inbox.id);
-    editingManagerInboxIds.value = user.inboxes
+const resetEditForm = () => {
+    editUserId.value = null;
+    editUserRole.value = 'operator';
+    editForm.name = '';
+    editForm.email = '';
+    editForm.is_active = true;
+    editForm.is_admin = false;
+    editForm.contact_name = '';
+    editForm.inbox_ids = [];
+    editForm.manager_inbox_ids = [];
+};
+
+const openEditUserModal = (user) => {
+    resetEditForm();
+    editUserId.value = user.id;
+    editUserRole.value = user.role;
+    editForm.name = user.name || '';
+    editForm.email = user.email || '';
+    editForm.is_active = Boolean(user.is_active);
+    editForm.is_admin = Boolean(user.is_admin);
+    editForm.contact_name = user.primary_contact?.name || user.name || '';
+    editForm.inbox_ids = (user.inboxes || []).map((inbox) => Number(inbox.id));
+    editForm.manager_inbox_ids = (user.inboxes || [])
         .filter((inbox) => inbox.can_manage_users)
-        .map((inbox) => inbox.id);
+        .map((inbox) => Number(inbox.id));
+    showEditUserModal.value = true;
 };
 
-const closeInboxEditor = () => {
-    editingInboxesUserId.value = null;
-    editingInboxIds.value = [];
-    editingManagerInboxIds.value = [];
+const closeEditUserModal = () => {
+    showEditUserModal.value = false;
+    resetEditForm();
 };
 
-const toggleEditingInbox = (id) => {
+const toggleEditInbox = (id) => {
     const value = Number(id);
 
-    if (editingInboxIds.value.includes(value)) {
-        editingInboxIds.value = editingInboxIds.value.filter((item) => item !== value);
-        editingManagerInboxIds.value = editingManagerInboxIds.value.filter((item) => item !== value);
+    if (editForm.inbox_ids.includes(value)) {
+        editForm.inbox_ids = editForm.inbox_ids.filter((item) => item !== value);
+        editForm.manager_inbox_ids = editForm.manager_inbox_ids.filter((item) => item !== value);
         return;
     }
 
-    editingInboxIds.value = [...editingInboxIds.value, value];
+    editForm.inbox_ids = [...editForm.inbox_ids, value];
 };
 
-const toggleEditingManagerInbox = (id) => {
+const toggleEditManagerInbox = (id) => {
     const value = Number(id);
 
-    if (!editingInboxIds.value.includes(value)) {
+    if (!editForm.inbox_ids.includes(value)) {
         return;
     }
 
-    if (editingManagerInboxIds.value.includes(value)) {
-        editingManagerInboxIds.value = editingManagerInboxIds.value.filter((item) => item !== value);
+    if (editForm.manager_inbox_ids.includes(value)) {
+        editForm.manager_inbox_ids = editForm.manager_inbox_ids.filter((item) => item !== value);
         return;
     }
 
-    editingManagerInboxIds.value = [...editingManagerInboxIds.value, value];
+    editForm.manager_inbox_ids = [...editForm.manager_inbox_ids, value];
 };
 
-const saveInboxes = async (user) => {
+const saveEditedUser = async () => {
+    if (!editUserId.value) {
+        return;
+    }
+
     error.value = '';
     success.value = '';
+    saving.value = true;
 
     try {
-        await api.patch(`/users/${user.id}/inboxes`, {
-            inbox_ids: editingInboxIds.value,
-            manager_inbox_ids: editingManagerInboxIds.value,
-        });
+        const payload = {
+            name: editForm.name,
+            is_active: editForm.is_active,
+        };
 
-        success.value = 'Acessos do operador atualizados.';
-        closeInboxEditor();
+        if (isClientEditForm.value) {
+            payload.contact_name = editForm.contact_name;
+        }
+
+        if (isOperatorEditForm.value && canSetAdmin.value) {
+            payload.is_admin = editForm.is_admin;
+        }
+
+        await api.patch(`/users/${editUserId.value}`, payload);
+
+        if (isOperatorEditForm.value) {
+            await api.patch(`/users/${editUserId.value}/inboxes`, {
+                inbox_ids: editForm.inbox_ids,
+                manager_inbox_ids: editForm.manager_inbox_ids,
+            });
+        }
+
+        success.value = 'Utilizador atualizado com sucesso.';
+        closeEditUserModal();
         await fetchUsers();
     } catch (exception) {
-        error.value = exception?.response?.data?.message || 'N\u00E3o foi poss\u00EDvel atualizar acessos.';
+        error.value = exception?.response?.data?.message
+            || Object.values(exception?.response?.data?.errors || {})?.[0]?.[0]
+            || 'N\u00E3o foi poss\u00EDvel atualizar utilizador.';
+    } finally {
+        saving.value = false;
     }
 };
 
@@ -517,6 +574,21 @@ onBeforeUnmount(() => {
                 </form>
             </article>
         </section>
+        <UserEditModal
+            :open="showEditUserModal"
+            :saving="saving"
+            :form="editForm"
+            :is-operator="isOperatorEditForm"
+            :is-client="isClientEditForm"
+            :can-set-admin="canSetAdmin"
+            :manageable-inboxes="manageableInboxes"
+            title="Editar utilizador"
+            subtitle="Atualizar dados do utilizador e permissões de acesso."
+            @close="closeEditUserModal"
+            @save="saveEditedUser"
+            @toggle-inbox="toggleEditInbox"
+            @toggle-manager-inbox="toggleEditManagerInbox"
+        />
 
         <article class="card" v-if="!loading">
             <div class="toolbar">
@@ -645,12 +717,11 @@ onBeforeUnmount(() => {
                                     </button>
 
                                     <button
-                                        v-if="user.role === 'operator'"
                                         type="button"
                                         class="menu-item"
-                                        @click="openInboxEditor(user); closeActionsMenu()"
+                                        @click="openEditUserModal(user); closeActionsMenu()"
                                     >
-                                        Gerir acessos
+                                        Editar
                                     </button>
 
                                     <button
@@ -668,37 +739,6 @@ onBeforeUnmount(() => {
                                 </div>
                             </div>
 
-                            <div v-if="editingInboxesUserId === user.id" class="editor-box">
-                                <p class="field-label">Inboxes do operador</p>
-                                <div class="checks">
-                                    <label v-for="inbox in manageableInboxes" :key="`edit-inbox-${user.id}-${inbox.id}`">
-                                        <input
-                                            type="checkbox"
-                                            :checked="editingInboxIds.includes(inbox.id)"
-                                            @change="toggleEditingInbox(inbox.id)"
-                                        />
-                                        {{ inbox.name }}
-                                    </label>
-                                </div>
-
-                                <p class="field-label">Permiss\u00E3o de gest\u00E3o de utilizadores</p>
-                                <div class="checks">
-                                    <label v-for="inbox in manageableInboxes" :key="`edit-manager-${user.id}-${inbox.id}`">
-                                        <input
-                                            type="checkbox"
-                                            :checked="editingManagerInboxIds.includes(inbox.id)"
-                                            :disabled="!editingInboxIds.includes(inbox.id)"
-                                            @change="toggleEditingManagerInbox(inbox.id)"
-                                        />
-                                        {{ inbox.name }}
-                                    </label>
-                                </div>
-
-                                <div class="row-actions">
-                                    <button type="button" @click="saveInboxes(user)">Guardar acessos</button>
-                                    <button type="button" class="ghost" @click="closeInboxEditor">Cancelar</button>
-                                </div>
-                            </div>
                         </td>
                     </tr>
                 </tbody>
@@ -1143,12 +1183,6 @@ td {
     gap: 0.2rem;
 }
 
-.row-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.45rem;
-}
-
 .actions-menu {
     position: relative;
     display: inline-flex;
@@ -1197,16 +1231,6 @@ td {
     border-color: #b91c1c;
     background: #b91c1c;
     color: #fff;
-}
-
-.editor-box {
-    margin-top: 0.6rem;
-    border: 1px solid #dbe4ee;
-    border-radius: 8px;
-    padding: 0.6rem;
-    display: grid;
-    gap: 0.55rem;
-    background: #f8fafc;
 }
 
 @media (max-width: 960px) {

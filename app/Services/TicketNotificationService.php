@@ -143,13 +143,19 @@ class TicketNotificationService
      */
     private function collectRecipients(Ticket $ticket): array
     {
-        $ticket->loadMissing(['creatorUser', 'contact', 'assignedOperator']);
+        $ticket->loadMissing(['creatorUser', 'contact', 'assignedOperator', 'followers']);
+        $followerEmails = $ticket->followers
+            ->pluck('email')
+            ->filter(fn (mixed $email) => is_string($email) && trim($email) !== '')
+            ->values()
+            ->all();
 
         return collect([
             $ticket->creatorUser?->email,
             $ticket->contact?->email,
             $ticket->assignedOperator?->email,
             ...($ticket->cc_emails ?? []),
+            ...$followerEmails,
         ])
             ->filter()
             ->map(fn (string $email) => trim($email))
@@ -166,7 +172,7 @@ class TicketNotificationService
      */
     private function collectRecipientUsers(Ticket $ticket): Collection
     {
-        $ticket->loadMissing(['creatorUser', 'contact.user', 'assignedOperator']);
+        $ticket->loadMissing(['creatorUser', 'contact.user', 'assignedOperator', 'followers']);
 
         $ccEmails = collect($ticket->cc_emails ?? [])
             ->filter(fn (mixed $email) => is_string($email) && trim($email) !== '')
@@ -186,6 +192,7 @@ class TicketNotificationService
             $ticket->contact?->user,
             $ticket->assignedOperator,
         ])
+            ->merge($ticket->followers)
             ->merge($usersByCc)
             ->filter(fn (mixed $user) => $user instanceof User && $user->is_active)
             ->unique(fn (User $user) => $user->id)

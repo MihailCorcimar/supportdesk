@@ -24,6 +24,7 @@ const savingMetadata = ref(false);
 const sendingMessage = ref(false);
 const sendingNote = ref(false);
 const statusMenuOpen = ref(false);
+const pinPending = ref(false);
 
 const statusForm = reactive({ status: '' });
 const assignmentForm = reactive({ assigned_operator_id: '' });
@@ -33,7 +34,9 @@ const metadataForm = reactive({
     type: '',
     inbox_id: '',
     cc_emails: '',
+    follower_user_ids: [],
 });
+const followerSearch = ref('');
 
 const statusLabels = {
     open: 'Aberto',
@@ -81,6 +84,22 @@ const headerStatusOptions = computed(() => statusOrder.filter((status) => status
 const isAlreadyClosed = computed(() => ticket.value?.status === 'closed');
 const previousTicket = computed(() => ticket.value?.navigation?.previous ?? null);
 const nextTicket = computed(() => ticket.value?.navigation?.next ?? null);
+const filteredFollowers = computed(() => {
+    const term = followerSearch.value.trim().toLowerCase();
+    const followers = ticket.value?.available_followers || [];
+
+    if (!term) return followers;
+
+    return followers.filter((follower) => {
+        const name = (follower.name || '').toLowerCase();
+        const email = (follower.email || '').toLowerCase();
+        return name.includes(term) || email.includes(term);
+    });
+});
+const selectedFollowers = computed(() => {
+    const selected = new Set((metadataForm.follower_user_ids || []).map((id) => Number(id)));
+    return (ticket.value?.available_followers || []).filter((follower) => selected.has(Number(follower.id)));
+});
 let conversationRefreshTimer = null;
 
 const loadTicket = async () => {
@@ -101,6 +120,7 @@ const loadTicket = async () => {
         metadataForm.type = ticket.value.type || 'request';
         metadataForm.inbox_id = ticket.value.inbox?.id ? String(ticket.value.inbox.id) : '';
         metadataForm.cc_emails = (ticket.value.cc_emails || []).join(', ');
+        metadataForm.follower_user_ids = (ticket.value.followers || []).map((follower) => Number(follower.id));
     } catch (exception) {
         error.value = 'Nao foi possivel carregar o ticket.';
     } finally {
@@ -182,6 +202,33 @@ const copyTicketId = async () => {
     }
 };
 
+const toggleTicketPin = async () => {
+    if (!ticket.value?.id || pinPending.value) {
+        return;
+    }
+
+    pinPending.value = true;
+
+    try {
+        if (ticket.value.is_pinned) {
+            await api.delete(`/conversations/${ticket.value.id}/pin`);
+        } else {
+            await api.post(`/conversations/${ticket.value.id}/pin`);
+        }
+
+        ticket.value.is_pinned = !ticket.value.is_pinned;
+        quickActionMessage.value = ticket.value.is_pinned ? 'Ticket fixado' : 'Ticket desafixado';
+        window.dispatchEvent(new CustomEvent('supportdesk:conversations-updated'));
+    } catch {
+        quickActionMessage.value = 'Não foi possível atualizar pin';
+    } finally {
+        pinPending.value = false;
+        setTimeout(() => {
+            quickActionMessage.value = '';
+        }, 1400);
+    }
+};
+
 const goToPreviousTicket = async () => {
     if (!previousTicket.value) return;
     await router.push({ name: 'tickets.show', params: { id: previousTicket.value.id } });
@@ -221,6 +268,7 @@ const updateMetadata = async () => {
             type: metadataForm.type,
             inbox_id: metadataForm.inbox_id ? Number(metadataForm.inbox_id) : null,
             cc_emails: metadataForm.cc_emails,
+            follower_user_ids: metadataForm.follower_user_ids,
         });
         await loadTicket();
     } catch (exception) {
@@ -234,6 +282,27 @@ const handleFilesChange = (event) => {
     const files = event.target.files ? [...event.target.files] : [];
     messageFiles.value = files;
 };
+
+const toggleFollower = (id) => {
+    const normalizedId = Number(id);
+    const current = (metadataForm.follower_user_ids || []).map((item) => Number(item));
+
+    if (current.includes(normalizedId)) {
+        metadataForm.follower_user_ids = current.filter((item) => item !== normalizedId);
+        return;
+    }
+
+    metadataForm.follower_user_ids = [...current, normalizedId];
+};
+
+const removeFollower = (id) => {
+    const normalizedId = Number(id);
+    metadataForm.follower_user_ids = (metadataForm.follower_user_ids || [])
+        .map((item) => Number(item))
+        .filter((item) => item !== normalizedId);
+};
+
+const followerRoleLabel = (role) => (role === 'operator' ? 'Operador' : 'Cliente');
 
 const sendMessage = async () => {
     if (!messageBody.value.trim() && messageFiles.value.length === 0) {
@@ -512,6 +581,22 @@ watch(
             </div>
 
             <div class="header-actions">
+                <button
+                    type="button"
+                    class="btn-ghost pin-header-btn"
+                    :class="{ 'is-pinned': ticket.is_pinned }"
+                    :disabled="pinPending"
+                    :title="ticket.is_pinned ? 'Desafixar ticket' : 'Fixar ticket'"
+                    :aria-label="ticket.is_pinned ? 'Desafixar ticket' : 'Fixar ticket'"
+                    @click="toggleTicketPin"
+                >
+                    <svg class="pin-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M9 4h6l-1.2 5.2 3.2 2.8v1.2H7v-1.2l3.2-2.8L9 4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+                        <path d="M12 13v7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                    </svg>
+                    <span>{{ ticket.is_pinned ? 'Desafixar' : 'Fixar' }}</span>
+                </button>
+
                 <div v-if="isOperator && canUpdateStatus" class="status-split">
                     <button
                         class="btn-success status-main"
@@ -743,6 +828,37 @@ watch(
                             <input v-model="metadataForm.cc_emails" placeholder="exemplo@dominio.pt, outro@dominio.pt">
                         </label>
 
+                        <label>
+                            Seguidores (utilizadores)
+                            <div class="followers-picker">
+                                <input
+                                    v-model="followerSearch"
+                                    type="search"
+                                    placeholder="Pesquisar utilizador por nome ou email"
+                                >
+
+                                <div class="followers-list">
+                                    <label v-for="follower in filteredFollowers" :key="follower.id" class="follower-item">
+                                        <input
+                                            type="checkbox"
+                                            :checked="metadataForm.follower_user_ids.map((id) => Number(id)).includes(Number(follower.id))"
+                                            @change="toggleFollower(follower.id)"
+                                        >
+                                        <span>{{ follower.name }}</span>
+                                        <small>{{ followerRoleLabel(follower.role) }}</small>
+                                    </label>
+                                    <p v-if="!filteredFollowers.length" class="followers-empty">Sem resultados.</p>
+                                </div>
+
+                                <div v-if="selectedFollowers.length" class="followers-tags">
+                                    <span v-for="follower in selectedFollowers" :key="`meta-follow-${follower.id}`" class="follower-tag">
+                                        {{ follower.name }}
+                                        <button type="button" @click="removeFollower(follower.id)">×</button>
+                                    </span>
+                                </div>
+                            </div>
+                        </label>
+
                         <button class="btn-primary" type="submit" :disabled="savingMetadata">
                             {{ savingMetadata ? 'A guardar...' : 'Atualizar metadados' }}
                         </button>
@@ -942,6 +1058,29 @@ watch(
     gap: 0.45rem;
     flex-wrap: wrap;
     justify-self: end;
+}
+
+.pin-header-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.38rem;
+    color: #475569;
+}
+
+.pin-header-btn .pin-icon {
+    width: 16px;
+    height: 16px;
+    transition: transform 0.18s ease;
+}
+
+.pin-header-btn.is-pinned {
+    border-color: #a5d8bf;
+    background: #eaf9f1;
+    color: #0f8f62;
+}
+
+.pin-header-btn.is-pinned .pin-icon {
+    transform: rotate(-16deg);
 }
 
 .status-split {
@@ -1539,6 +1678,73 @@ watch(
     border-radius: 9px;
     padding: 0.47rem 0.55rem;
     font: inherit;
+}
+
+.followers-picker {
+    border: 1px solid #d7e0ea;
+    border-radius: 10px;
+    padding: 0.55rem;
+    display: grid;
+    gap: 0.45rem;
+    background: #f8fbff;
+}
+
+.followers-list {
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    background: #fff;
+    max-height: 180px;
+    overflow: auto;
+}
+
+.follower-item {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.36rem 0.5rem;
+    border-bottom: 1px solid #eef2f7;
+}
+
+.follower-item:last-child {
+    border-bottom: 0;
+}
+
+.follower-item small {
+    color: #64748b;
+}
+
+.followers-empty {
+    margin: 0;
+    padding: 0.6rem;
+    color: #64748b;
+}
+
+.followers-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.follower-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px solid #b9ccdf;
+    border-radius: 999px;
+    background: #eff6ff;
+    color: #0f172a;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.8rem;
+}
+
+.follower-tag button {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    line-height: 1;
+    cursor: pointer;
+    color: #475569;
 }
 
 @media (max-width: 1200px) {

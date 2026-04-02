@@ -128,10 +128,9 @@ class UserManagementApiController extends Controller
             'contacts as contacts_count',
         ]);
 
-        $recentCreatedTickets = $user->createdTickets()
+        $createdTickets = $user->createdTickets()
             ->with(['inbox:id,name', 'entity:id,name'])
             ->orderByDesc('id')
-            ->limit(10)
             ->get()
             ->map(fn ($ticket) => [
                 'id' => $ticket->id,
@@ -157,7 +156,7 @@ class UserManagementApiController extends Controller
                 ...$this->serializeUser($user),
                 'assigned_tickets_count' => (int) ($user->assigned_tickets_count ?? 0),
                 'contacts_count' => (int) ($user->contacts_count ?? 0),
-                'recent_created_tickets' => $recentCreatedTickets,
+                'created_tickets' => $createdTickets,
             ],
         ]);
     }

@@ -54,6 +54,64 @@ class EntityApiController extends Controller
     }
 
     /**
+     * Show one entity details.
+     */
+    public function show(Entity $entity): JsonResponse
+    {
+        $entity->loadCount(['contacts', 'tickets']);
+        $entity->load([
+            'contacts' => fn ($query) => $query
+                ->with(['user:id,name,email', 'contactFunction:id,name'])
+                ->orderBy('name'),
+            'tickets' => fn ($query) => $query
+                ->with(['inbox:id,name', 'creatorUser:id,name', 'creatorContact:id,name'])
+                ->latest(),
+        ]);
+
+        return response()->json([
+            'data' => array_merge(
+                $this->serializeEntity($entity),
+                [
+                    'contacts' => $entity->contacts->map(fn ($contact) => [
+                        'id' => $contact->id,
+                        'name' => $contact->name,
+                        'email' => $contact->email,
+                        'phone' => $contact->phone,
+                        'mobile_phone' => $contact->mobile_phone,
+                        'function' => $contact->contactFunction?->name,
+                        'is_active' => (bool) $contact->is_active,
+                        'user' => $contact->user ? [
+                            'id' => $contact->user->id,
+                            'name' => $contact->user->name,
+                            'email' => $contact->user->email,
+                        ] : null,
+                    ])->values()->all(),
+                    'associated_tickets' => $entity->tickets->map(fn ($ticket) => [
+                        'id' => $ticket->id,
+                        'ticket_number' => $ticket->ticket_number,
+                        'subject' => $ticket->subject,
+                        'status' => $ticket->status,
+                        'priority' => $ticket->priority,
+                        'created_at' => optional($ticket->created_at)?->toIso8601String(),
+                        'inbox' => $ticket->inbox ? [
+                            'id' => $ticket->inbox->id,
+                            'name' => $ticket->inbox->name,
+                        ] : null,
+                        'creator_user' => $ticket->creatorUser ? [
+                            'id' => $ticket->creatorUser->id,
+                            'name' => $ticket->creatorUser->name,
+                        ] : null,
+                        'creator_contact' => $ticket->creatorContact ? [
+                            'id' => $ticket->creatorContact->id,
+                            'name' => $ticket->creatorContact->name,
+                        ] : null,
+                    ])->values()->all(),
+                ]
+            ),
+        ]);
+    }
+
+    /**
      * Create entity.
      */
     public function store(Request $request): JsonResponse

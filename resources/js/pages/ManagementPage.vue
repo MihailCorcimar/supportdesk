@@ -257,6 +257,7 @@ const loadAll = async () => {
         await loadBaseData();
         await loadNotificationTemplates();
         await loadLogs();
+        await maybeOpenEntityEditFromQuery();
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Nao foi possivel carregar configuracao.';
     } finally {
@@ -591,6 +592,32 @@ const openEntityEditModal = (entity) => {
     showEntityEditModal.value = true;
 };
 
+const maybeOpenEntityEditFromQuery = async () => {
+    if (activeTab.value !== 'entities') {
+        return;
+    }
+
+    const rawEntityId = route.query.edit_entity_id;
+    if (typeof rawEntityId !== 'string') {
+        return;
+    }
+
+    const entityId = Number(rawEntityId);
+    if (!Number.isInteger(entityId) || entityId <= 0) {
+        return;
+    }
+
+    const entity = entities.value.find((item) => Number(item.id) === entityId);
+    if (!entity) {
+        return;
+    }
+
+    openEntityEditModal(entity);
+
+    const { edit_entity_id, ...restQuery } = route.query;
+    await router.replace({ query: restQuery });
+};
+
 const closeEntityEditModal = () => {
     showEntityEditModal.value = false;
     editingEntityId.value = null;
@@ -830,6 +857,14 @@ watch(
     }
 );
 
+watch(
+    () => route.query.edit_entity_id,
+    () => {
+        if (loading.value) return;
+        maybeOpenEntityEditFromQuery();
+    }
+);
+
 watch(activeTab, (tab) => {
     const normalized = normalizeTab(tab);
     const current = normalizeTab(typeof route.query.tab === 'string' ? route.query.tab : 'inboxes');
@@ -841,6 +876,10 @@ watch(activeTab, (tab) => {
                 tab: normalized,
             },
         });
+    }
+
+    if (normalized === 'entities' && typeof route.query.edit_entity_id === 'string') {
+        maybeOpenEntityEditFromQuery();
     }
 });
 

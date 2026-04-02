@@ -13,7 +13,6 @@ const hideShell = computed(() => Boolean(route.meta?.hideShell));
 const isSidebarOpen = ref(true);
 const notificationUnreadCount = ref(0);
 const pinnedConversations = ref([]);
-const recentConversations = ref([]);
 const conversationsLoading = ref(false);
 const pinPendingIds = ref([]);
 
@@ -52,7 +51,6 @@ const isLinkActive = (link) => {
 const loadRecentConversations = async () => {
     if (!user.value) {
         pinnedConversations.value = [];
-        recentConversations.value = [];
         return;
     }
 
@@ -67,10 +65,8 @@ const loadRecentConversations = async () => {
 
         const payload = response.data?.data || {};
         pinnedConversations.value = payload.pinned || [];
-        recentConversations.value = payload.recent || [];
     } catch {
         pinnedConversations.value = [];
-        recentConversations.value = [];
     } finally {
         conversationsLoading.value = false;
     }
@@ -129,6 +125,10 @@ const onNotificationsUpdated = () => {
     loadNotificationUnreadCount();
 };
 
+const onConversationsUpdated = () => {
+    loadRecentConversations();
+};
+
 watch(
     () => user.value?.id,
     () => {
@@ -150,10 +150,12 @@ watch(
 
 onMounted(() => {
     window.addEventListener('supportdesk:notifications-updated', onNotificationsUpdated);
+    window.addEventListener('supportdesk:conversations-updated', onConversationsUpdated);
 });
 
 onUnmounted(() => {
     window.removeEventListener('supportdesk:notifications-updated', onNotificationsUpdated);
+    window.removeEventListener('supportdesk:conversations-updated', onConversationsUpdated);
 });
 </script>
 
@@ -265,42 +267,20 @@ onUnmounted(() => {
                                 class="pin-toggle is-pinned"
                                 :disabled="isPinPending(conversation.id)"
                                 title="Desafixar conversa"
+                                aria-label="Desafixar conversa"
                                 @click.stop.prevent="toggleConversationPin(conversation)"
                             >
-                                Unpin
-                            </button>
-                        </li>
-                    </ul>
-
-                    <p v-if="recentConversations.length" class="section-subtitle">Recentes</p>
-                    <ul class="conversation-list">
-                        <li
-                            v-for="conversation in recentConversations"
-                            :key="`recent-${conversation.id}`"
-                            class="conversation-item"
-                        >
-                            <RouterLink
-                                :to="{ name: 'tickets.show', params: { id: conversation.id } }"
-                                class="conversation-link"
-                            >
-                                <span class="conversation-code">#{{ conversation.ticket_number }}</span>
-                                <span class="conversation-subject">{{ conversation.subject }}</span>
-                            </RouterLink>
-                            <button
-                                type="button"
-                                class="pin-toggle"
-                                :disabled="isPinPending(conversation.id)"
-                                title="Fixar conversa"
-                                @click.stop.prevent="toggleConversationPin(conversation)"
-                            >
-                                Pin
+                                <svg class="pin-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                    <path d="M9 4h6l-1.2 5.2 3.2 2.8v1.2H7v-1.2l3.2-2.8L9 4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+                                    <path d="M12 13v7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                                </svg>
                             </button>
                         </li>
                         <li
-                            v-if="!conversationsLoading && !pinnedConversations.length && !recentConversations.length"
+                            v-if="!conversationsLoading && !pinnedConversations.length"
                             class="conversation-empty"
                         >
-                            Sem conversas recentes
+                            Sem conversas fixadas
                         </li>
                     </ul>
                 </section>
@@ -596,18 +576,16 @@ body {
 .pin-toggle {
     border: 1px solid #d7e0ec;
     background: #f8fbff;
-    border-radius: 8px;
-    min-width: 48px;
+    border-radius: 999px;
+    width: 32px;
     height: 32px;
-    padding: 0 0.45rem;
+    padding: 0;
     cursor: pointer;
-    font-size: 0.72rem;
-    font-weight: 700;
-    line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     color: #60758f;
+    flex-shrink: 0;
 }
 
 .pin-toggle:hover {
@@ -619,6 +597,16 @@ body {
     border-color: #a5d8bf;
     background: #eaf9f1;
     color: #0f8f62;
+}
+
+.pin-icon {
+    width: 16px;
+    height: 16px;
+    transition: transform 0.18s ease;
+}
+
+.pin-toggle.is-pinned .pin-icon {
+    transform: rotate(-16deg);
 }
 
 .pin-toggle:disabled {

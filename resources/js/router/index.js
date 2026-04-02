@@ -13,6 +13,7 @@ import TicketEditPage from '../pages/TicketEditPage.vue';
 import TicketShowPage from '../pages/TicketShowPage.vue';
 import UsersManagementPage from '../pages/UsersManagementPage.vue';
 import UserDetailsPage from '../pages/UserDetailsPage.vue';
+import EntityDetailsPage from '../pages/EntityDetailsPage.vue';
 import { useAuthStore } from '../stores/auth';
 
 const routes = [
@@ -78,6 +79,12 @@ const routes = [
         path: '/users/:id',
         name: 'users.show',
         component: UserDetailsPage,
+        meta: { requiresAuth: true, requiresUserManager: true },
+    },
+    {
+        path: '/entities/:id',
+        name: 'entities.show',
+        component: EntityDetailsPage,
         meta: { requiresAuth: true, requiresUserManager: true },
     },
     {

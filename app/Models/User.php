@@ -202,4 +202,13 @@ class User extends Authenticatable
             ->withPivot(['position'])
             ->withTimestamps();
     }
+
+    /**
+     * Get tickets this user follows for updates.
+     */
+    public function followedTickets(): BelongsToMany
+    {
+        return $this->belongsToMany(Ticket::class, 'ticket_followers')
+            ->withTimestamps();
+    }
 }

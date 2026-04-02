@@ -12,6 +12,7 @@ use App\Models\TicketMessage;
 use App\Models\TicketStatus;
 use App\Models\TicketType;
 use App\Models\User;
+use App\Models\UserPinnedTicket;
 use App\Services\TicketNotificationService;
 use App\Support\TicketActivityLogger;
 use Illuminate\Database\Eloquent\Builder;
@@ -45,10 +46,23 @@ class TicketApiController extends Controller
         $this->applySorting($ticketsQuery, $request);
 
         $tickets = $ticketsQuery->paginate(15)->withQueryString();
+        $ticketItems = collect($tickets->items());
+        $pinnedLookup = $this->pinnedTicketLookup(
+            $user,
+            $ticketItems
+                ->pluck('id')
+                ->map(fn (mixed $id): int => (int) $id)
+                ->all()
+        );
 
         return response()->json([
-            'data' => collect($tickets->items())
-                ->map(fn (Ticket $ticket) => $this->serializeTicketListItem($ticket))
+            'data' => $ticketItems
+                ->map(
+                    fn (Ticket $ticket) => $this->serializeTicketListItem(
+                        $ticket,
+                        isset($pinnedLookup[(int) $ticket->id])
+                    )
+                )
                 ->all(),
             'meta' => [
                 'current_page' => $tickets->currentPage(),
@@ -67,6 +81,7 @@ class TicketApiController extends Controller
         $user = $request->user();
         $entities = $this->entitiesForUser($user);
         $entityIds = $entities->pluck('id');
+        $followers = $this->followerCandidatesForUser($user);
         $ticketStatuses = $this->ticketStatuses();
         $ticketTypes = $this->ticketTypes();
 
@@ -108,6 +123,12 @@ class TicketApiController extends Controller
                     'id' => $operator->id,
                     'name' => $operator->name,
                 ])->values(),
+                'followers' => $followers->map(fn (User $follower) => [
+                    'id' => $follower->id,
+                    'name' => $follower->name,
+                    'email' => $follower->email,
+                    'role' => $follower->role,
+                ])->values(),
                 'statuses' => $ticketStatuses->pluck('code')->values(),
                 'create_statuses' => $ticketStatuses
                     ->where('is_initial', true)
@@ -140,6 +161,8 @@ class TicketApiController extends Controller
             'status' => ['nullable', Rule::exists('ticket_statuses', 'code')->where(fn ($query) => $query->where('is_initial', true))],
             'assigned_operator_id' => ['nullable', 'integer', Rule::exists('users', 'id')],
             'cc_emails' => ['nullable', 'string'],
+            'follower_user_ids' => ['nullable', 'array'],
+            'follower_user_ids.*' => ['integer', Rule::exists('users', 'id')],
             'attachments' => ['nullable', 'array', 'max:5'],
             'attachments.*' => ['file', 'max:10240', 'mimes:jpg,jpeg,png,pdf,doc,docx,xls,xlsx,txt,csv,zip'],
         ]);
@@ -155,6 +178,7 @@ class TicketApiController extends Controller
         $contact = $this->resolveTicketContact($user, (int) $validated['entity_id'], $validated['contact_id'] ?? null);
         $assignedOperator = $this->resolveAssignedOperator($validated['assigned_operator_id'] ?? null, (int) $validated['inbox_id']);
         $ccEmails = $this->parseCcEmails($validated['cc_emails'] ?? null);
+        $followerUserIds = $this->parseFollowerUserIds($validated['follower_user_ids'] ?? [], $user);
         $descriptionFormat = $this->normalizeMessageFormat($validated['description_format'] ?? null);
         $descriptionBody = $this->normalizeMessageBody($validated['description'] ?? '', $descriptionFormat);
         $initialStatus = $user->isOperator() ? ($validated['status'] ?? 'open') : 'open';
@@ -173,6 +197,7 @@ class TicketApiController extends Controller
             $contact,
             $assignedOperator,
             $ccEmails,
+            $followerUserIds,
             $initialStatus,
             $descriptionFormat,
             $descriptionBody,
@@ -201,6 +226,10 @@ class TicketApiController extends Controller
             $ticket->update([
                 'ticket_number' => sprintf('TC-%06d', $ticket->id),
             ]);
+
+            if ($followerUserIds !== []) {
+                $ticket->followers()->sync($followerUserIds);
+            }
 
             $message = TicketMessage::query()->create([
                 'ticket_id' => $ticket->id,
@@ -302,6 +331,19 @@ class TicketApiController extends Controller
                 );
             }
 
+            if ($followerUserIds !== []) {
+                TicketActivityLogger::log(
+                    $ticket,
+                    'field_updated',
+                    'follower_user_ids',
+                    '',
+                    implode(', ', $followerUserIds),
+                    $actor['actor_type'],
+                    $actor['actor_user_id'],
+                    $actor['actor_contact_id']
+                );
+            }
+
             return $ticket;
         });
 
@@ -335,6 +377,7 @@ class TicketApiController extends Controller
             'messages.attachmentsList',
             'logs.actorUser',
             'logs.actorContact',
+            'followers',
         ]);
 
         $operators = collect();
@@ -356,7 +399,12 @@ class TicketApiController extends Controller
             ->where('is_active', true)
             ->orderBy('name')
             ->get();
+        $availableFollowers = $this->followerCandidatesForUser($request->user());
         $navigation = $this->adjacentTickets($ticket, $request->user());
+        $isPinned = UserPinnedTicket::query()
+            ->where('user_id', $request->user()->id)
+            ->where('ticket_id', $ticket->id)
+            ->exists();
 
         return response()->json([
             'data' => $this->serializeTicketDetail(
@@ -365,6 +413,8 @@ class TicketApiController extends Controller
                 $availableInboxes,
                 $availableEntities,
                 $availableContacts,
+                $availableFollowers,
+                $isPinned,
                 $navigation,
                 $request
             ),
@@ -389,6 +439,8 @@ class TicketApiController extends Controller
             'contact_id' => ['sometimes', 'nullable', 'integer', Rule::exists('contacts', 'id')],
             'assigned_operator_id' => ['sometimes', 'nullable', 'integer', Rule::exists('users', 'id')],
             'cc_emails' => ['sometimes', 'nullable', 'string'],
+            'follower_user_ids' => ['sometimes', 'array'],
+            'follower_user_ids.*' => ['integer', Rule::exists('users', 'id')],
         ]);
 
         if ($validated === []) {
@@ -400,6 +452,7 @@ class TicketApiController extends Controller
         $user = $request->user();
         $updates = [];
         $changes = [];
+        $followerSyncIds = null;
         $statusChanged = false;
         $assignmentChanged = false;
 
@@ -463,6 +516,30 @@ class TicketApiController extends Controller
                     'field' => 'cc_emails',
                     'old' => implode(', ', $ticket->cc_emails ?? []),
                     'new' => implode(', ', $newCc),
+                ];
+            }
+        }
+
+        if (array_key_exists('follower_user_ids', $validated)) {
+            $newFollowerIds = $this->parseFollowerUserIds($validated['follower_user_ids'], $user);
+            $currentFollowerIds = $ticket->followers()
+                ->pluck('users.id')
+                ->map(fn (int|string $id) => (int) $id)
+                ->sort()
+                ->values()
+                ->all();
+            $normalizedNewFollowerIds = collect($newFollowerIds)
+                ->map(fn (int $id) => (int) $id)
+                ->sort()
+                ->values()
+                ->all();
+
+            if ($currentFollowerIds !== $normalizedNewFollowerIds) {
+                $followerSyncIds = $newFollowerIds;
+                $changes[] = [
+                    'field' => 'follower_user_ids',
+                    'old' => implode(', ', $currentFollowerIds),
+                    'new' => implode(', ', $newFollowerIds),
                 ];
             }
         }
@@ -542,8 +619,12 @@ class TicketApiController extends Controller
 
         $updates['last_activity_at'] = now();
 
-        DB::transaction(function () use ($ticket, $updates, $changes, $user): void {
+        DB::transaction(function () use ($ticket, $updates, $changes, $followerSyncIds, $user): void {
             $ticket->update($updates);
+
+            if (is_array($followerSyncIds)) {
+                $ticket->followers()->sync($followerSyncIds);
+            }
 
             foreach ($changes as $change) {
                 $action = match ($change['field']) {
@@ -733,6 +814,8 @@ class TicketApiController extends Controller
             'type' => ['sometimes', Rule::exists('ticket_types', 'code')],
             'inbox_id' => ['sometimes', 'integer', Rule::exists('inboxes', 'id')],
             'cc_emails' => ['sometimes', 'nullable', 'string'],
+            'follower_user_ids' => ['sometimes', 'array'],
+            'follower_user_ids.*' => ['integer', Rule::exists('users', 'id')],
         ]);
 
         if ($validated === []) {
@@ -744,6 +827,7 @@ class TicketApiController extends Controller
         $user = $request->user();
         $updates = [];
         $changes = [];
+        $followerSyncIds = null;
 
         if (array_key_exists('subject', $validated) && $validated['subject'] !== $ticket->subject) {
             $updates['subject'] = $validated['subject'];
@@ -798,6 +882,30 @@ class TicketApiController extends Controller
             }
         }
 
+        if (array_key_exists('follower_user_ids', $validated)) {
+            $newFollowerIds = $this->parseFollowerUserIds($validated['follower_user_ids'], $user);
+            $currentFollowerIds = $ticket->followers()
+                ->pluck('users.id')
+                ->map(fn (int|string $id) => (int) $id)
+                ->sort()
+                ->values()
+                ->all();
+            $normalizedNewFollowerIds = collect($newFollowerIds)
+                ->map(fn (int $id) => (int) $id)
+                ->sort()
+                ->values()
+                ->all();
+
+            if ($currentFollowerIds !== $normalizedNewFollowerIds) {
+                $followerSyncIds = $newFollowerIds;
+                $changes[] = [
+                    'field' => 'follower_user_ids',
+                    'old' => implode(', ', $currentFollowerIds),
+                    'new' => implode(', ', $newFollowerIds),
+                ];
+            }
+        }
+
         if ($changes === []) {
             return response()->json([
                 'message' => 'No changes to apply.',
@@ -809,8 +917,12 @@ class TicketApiController extends Controller
 
         $updates['last_activity_at'] = now();
 
-        DB::transaction(function () use ($ticket, $updates, $changes, $user): void {
+        DB::transaction(function () use ($ticket, $updates, $changes, $followerSyncIds, $user): void {
             $ticket->update($updates);
+
+            if (is_array($followerSyncIds)) {
+                $ticket->followers()->sync($followerSyncIds);
+            }
 
             foreach ($changes as $change) {
                 $action = $change['field'] === 'assigned_operator_id'
@@ -1018,6 +1130,27 @@ class TicketApiController extends Controller
     }
 
     /**
+     * Get follower candidates available for the current user.
+     */
+    private function followerCandidatesForUser(User $user)
+    {
+        $query = User::query()
+            ->where('is_active', true);
+
+        if ($user->isClient()) {
+            $query->where(function (Builder $builder) use ($user): void {
+                $builder
+                    ->where('role', 'operator')
+                    ->orWhereKey($user->id);
+            });
+        }
+
+        return $query
+            ->orderBy('name')
+            ->get();
+    }
+
+    /**
      * Resolve and validate contact for ticket creation.
      */
     private function resolveTicketContact(User $user, int $entityId, ?int $contactId): ?Contact
@@ -1093,6 +1226,50 @@ class TicketApiController extends Controller
     }
 
     /**
+     * Parse and validate follower user ids.
+     *
+     * @param  array<int, mixed>|null  $rawIds
+     * @return list<int>
+     */
+    private function parseFollowerUserIds(?array $rawIds, User $actor): array
+    {
+        $ids = collect($rawIds ?? [])
+            ->filter(fn (mixed $id) => is_numeric($id))
+            ->map(fn (int|string $id) => (int) $id)
+            ->filter(fn (int $id) => $id > 0)
+            ->unique()
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return [];
+        }
+
+        $allowedIds = $this->followerCandidatesForUser($actor)
+            ->pluck('id')
+            ->map(fn (int|string $id) => (int) $id);
+        $invalidId = $ids->first(fn (int $id) => ! $allowedIds->contains($id));
+
+        if ($invalidId !== null) {
+            throw ValidationException::withMessages([
+                'follower_user_ids' => "Invalid follower user: {$invalidId}",
+            ]);
+        }
+
+        $activeIds = User::query()
+            ->whereIn('id', $ids->all())
+            ->where('is_active', true)
+            ->pluck('id')
+            ->map(fn (int|string $id) => (int) $id)
+            ->all();
+        $activeLookup = array_fill_keys($activeIds, true);
+
+        return $ids
+            ->filter(fn (int $id) => isset($activeLookup[$id]))
+            ->values()
+            ->all();
+    }
+
+    /**
      * Normalize message format.
      */
     private function normalizeMessageFormat(?string $format): string
@@ -1148,12 +1325,13 @@ class TicketApiController extends Controller
      *
      * @return array<string, mixed>
      */
-    private function serializeTicketListItem(Ticket $ticket): array
+    private function serializeTicketListItem(Ticket $ticket, bool $isPinned = false): array
     {
         return [
             'id' => $ticket->id,
             'ticket_number' => $ticket->ticket_number,
             'subject' => $ticket->subject,
+            'is_pinned' => $isPinned,
             'status' => $ticket->status,
             'priority' => $ticket->priority,
             'type' => $ticket->type,
@@ -1175,6 +1353,8 @@ class TicketApiController extends Controller
      * @param  \Illuminate\Support\Collection<int, Inbox>  $availableInboxes
      * @param  \Illuminate\Support\Collection<int, Entity>  $availableEntities
      * @param  \Illuminate\Support\Collection<int, Contact>  $availableContacts
+     * @param  \Illuminate\Support\Collection<int, User>  $availableFollowers
+     * @param  bool  $isPinned
      * @param  array{previous:?array{id:int,ticket_number:string,subject:string},next:?array{id:int,ticket_number:string,subject:string}}  $navigation
      * @return array<string, mixed>
      */
@@ -1184,6 +1364,8 @@ class TicketApiController extends Controller
         $availableInboxes,
         $availableEntities,
         $availableContacts,
+        $availableFollowers,
+        bool $isPinned,
         array $navigation,
         Request $request
     ): array
@@ -1193,11 +1375,18 @@ class TicketApiController extends Controller
             'id' => $ticket->id,
             'ticket_number' => $ticket->ticket_number,
             'subject' => $ticket->subject,
+            'is_pinned' => $isPinned,
             'description' => $ticket->description,
             'status' => $ticket->status,
             'priority' => $ticket->priority,
             'type' => $ticket->type,
             'cc_emails' => $ticket->cc_emails ?? [],
+            'followers' => $ticket->followers->map(fn (User $follower) => [
+                'id' => $follower->id,
+                'name' => $follower->name,
+                'email' => $follower->email,
+                'role' => $follower->role,
+            ])->values()->all(),
             'created_at' => optional($ticket->created_at)?->toIso8601String(),
             'last_activity_at' => optional($ticket->last_activity_at ?? $ticket->updated_at)?->toIso8601String(),
             'inbox' => $ticket->inbox ? ['id' => $ticket->inbox->id, 'name' => $ticket->inbox->name] : null,
@@ -1265,6 +1454,12 @@ class TicketApiController extends Controller
                 'email' => $contact->email,
                 'entity_ids' => $contact->entities->pluck('id')->values()->all(),
             ])->values()->all(),
+            'available_followers' => $availableFollowers->map(fn (User $follower) => [
+                'id' => $follower->id,
+                'name' => $follower->name,
+                'email' => $follower->email,
+                'role' => $follower->role,
+            ])->values()->all(),
             'navigation' => $navigation,
         ];
     }
@@ -1301,5 +1496,25 @@ class TicketApiController extends Controller
                 'subject' => $next->subject,
             ] : null,
         ];
+    }
+
+    /**
+     * @param  list<int>  $ticketIds
+     * @return array<int, bool>
+     */
+    private function pinnedTicketLookup(User $user, array $ticketIds): array
+    {
+        if ($ticketIds === []) {
+            return [];
+        }
+
+        $pinnedIds = UserPinnedTicket::query()
+            ->where('user_id', $user->id)
+            ->whereIn('ticket_id', $ticketIds)
+            ->pluck('ticket_id')
+            ->map(fn (mixed $id): int => (int) $id)
+            ->all();
+
+        return array_fill_keys($pinnedIds, true);
     }
 }

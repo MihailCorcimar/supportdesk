@@ -56,6 +56,7 @@ Route::prefix('app-api')->group(function (): void {
             Route::delete('/inboxes/{inbox}', [InboxApiController::class, 'destroy']);
 
             Route::get('/entities', [EntityApiController::class, 'index']);
+            Route::get('/entities/{entity}', [EntityApiController::class, 'show']);
             Route::post('/entities', [EntityApiController::class, 'store']);
             Route::patch('/entities/{entity}', [EntityApiController::class, 'update']);
             Route::delete('/entities/{entity}', [EntityApiController::class, 'destroy']);

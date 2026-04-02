@@ -17,6 +17,7 @@ const options = ref({
     entities: [],
     contacts: [],
     operators: [],
+    followers: [],
     create_statuses: ['open', 'in_progress', 'pending'],
     priorities: ['low', 'medium', 'high', 'urgent'],
     types: ['question', 'incident', 'request', 'task', 'other'],
@@ -33,7 +34,11 @@ const form = reactive({
     status: 'open',
     assigned_operator_id: '',
     cc_emails: '',
+    follower_user_ids: [],
 });
+
+const followerSearch = ref('');
+const followerPickerOpen = ref(false);
 
 const priorityLabels = {
     low: 'Baixa',
@@ -55,6 +60,30 @@ const availableContacts = computed(() => {
     return options.value.contacts.filter(
         (contact) => Array.isArray(contact.entity_ids) && contact.entity_ids.includes(Number(form.entity_id)),
     );
+});
+
+const filteredFollowers = computed(() => {
+    const term = followerSearch.value.trim().toLowerCase();
+    const followers = options.value.followers || [];
+
+    if (!term) return followers;
+
+    return followers.filter((follower) => {
+        const name = (follower.name || '').toLowerCase();
+        const email = (follower.email || '').toLowerCase();
+        return name.includes(term) || email.includes(term);
+    });
+});
+
+const selectedFollowers = computed(() => {
+    const selected = new Set((form.follower_user_ids || []).map((id) => Number(id)));
+    return (options.value.followers || []).filter((follower) => selected.has(Number(follower.id)));
+});
+const followerSuggestions = computed(() => {
+    const selected = new Set((form.follower_user_ids || []).map((id) => Number(id)));
+    return filteredFollowers.value
+        .filter((follower) => !selected.has(Number(follower.id)))
+        .slice(0, 8);
 });
 
 const loadMeta = async () => {
@@ -101,6 +130,10 @@ const submit = async () => {
         payload.append('cc_emails', form.cc_emails);
     }
 
+    (form.follower_user_ids || []).forEach((id) => {
+        payload.append('follower_user_ids[]', String(Number(id)));
+    });
+
     if (isOperator.value) {
         payload.append('status', form.status);
         if (form.assigned_operator_id) {
@@ -133,6 +166,49 @@ const closeModal = async () => {
 
 const onAttachmentChange = (event) => {
     messageAttachments.value = Array.from(event?.target?.files ?? []);
+};
+
+const toggleFollower = (id) => {
+    const normalizedId = Number(id);
+    const current = (form.follower_user_ids || []).map((item) => Number(item));
+
+    if (current.includes(normalizedId)) {
+        form.follower_user_ids = current.filter((item) => item !== normalizedId);
+        return;
+    }
+
+    form.follower_user_ids = [...current, normalizedId];
+};
+
+const removeFollower = (id) => {
+    const normalizedId = Number(id);
+    form.follower_user_ids = (form.follower_user_ids || [])
+        .map((item) => Number(item))
+        .filter((item) => item !== normalizedId);
+};
+
+const followerRoleLabel = (role) => (role === 'operator' ? 'Operador' : 'Cliente');
+const followerInitials = (name) => {
+    const chunks = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!chunks.length) return '?';
+    if (chunks.length === 1) return chunks[0].slice(0, 2).toUpperCase();
+    return `${chunks[0][0] || ''}${chunks[chunks.length - 1][0] || ''}`.toUpperCase();
+};
+const chooseFollower = (id) => {
+    toggleFollower(id);
+    followerSearch.value = '';
+    followerPickerOpen.value = true;
+};
+const handleFollowerSearchEnter = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    const first = followerSuggestions.value[0];
+    if (first) chooseFollower(first.id);
+};
+const closeFollowerPicker = () => {
+    setTimeout(() => {
+        followerPickerOpen.value = false;
+    }, 120);
 };
 
 onMounted(loadMeta);
@@ -232,9 +308,50 @@ onMounted(loadMeta);
                 </label>
 
                 <label class="col-span-2">
-                    Conhecimento (emails separados por virgula)
+                    Conhecimento (emails CC separados por virgula)
                     <input v-model="form.cc_emails" placeholder="exemplo@dominio.pt, segundo@dominio.pt" />
                     <small class="field-error">{{ fieldErrors.cc_emails?.[0] }}</small>
+                </label>
+
+                <label class="col-span-2">
+                    Conhecimento (utilizadores)
+                    <div class="followers-picker-modern">
+                        <div v-if="selectedFollowers.length" class="followers-tags-modern">
+                            <span v-for="follower in selectedFollowers" :key="`sel-${follower.id}`" class="follower-tag-modern">
+                                <span class="follower-avatar">{{ followerInitials(follower.name) }}</span>
+                                <span class="follower-name">{{ follower.name }}</span>
+                                <button type="button" @click="removeFollower(follower.id)">×</button>
+                            </span>
+                        </div>
+
+                        <input
+                            v-model="followerSearch"
+                            type="search"
+                            placeholder="Escreve nome ou email para adicionar"
+                            @focus="followerPickerOpen = true"
+                            @blur="closeFollowerPicker"
+                            @keydown="handleFollowerSearchEnter"
+                        />
+
+                        <div v-if="followerPickerOpen" class="followers-suggestions">
+                            <button
+                                type="button"
+                                v-for="follower in followerSuggestions"
+                                :key="`opt-${follower.id}`"
+                                class="follower-option"
+                                @mousedown.prevent="chooseFollower(follower.id)"
+                            >
+                                <span class="follower-avatar">{{ followerInitials(follower.name) }}</span>
+                                <span class="follower-meta">
+                                    <strong>{{ follower.name }}</strong>
+                                    <small>{{ follower.email }} · {{ followerRoleLabel(follower.role) }}</small>
+                                </span>
+                            </button>
+
+                            <p v-if="!followerSuggestions.length" class="followers-empty">Sem resultados.</p>
+                        </div>
+                    </div>
+                    <small class="field-error">{{ fieldErrors.follower_user_ids?.[0] || fieldErrors['follower_user_ids.0']?.[0] }}</small>
                 </label>
 
                 <label class="col-span-3">
@@ -328,6 +445,118 @@ input, select, textarea {
 }
 
 textarea { min-height: 130px; resize: vertical; }
+
+.followers-picker-modern {
+    position: relative;
+    border: 1px solid #dbe4ee;
+    border-radius: 10px;
+    padding: 0.55rem;
+    display: grid;
+    gap: 0.45rem;
+    background: #f8fbff;
+}
+
+.followers-suggestions {
+    position: absolute;
+    left: 0.55rem;
+    right: 0.55rem;
+    top: calc(100% + 0.3rem);
+    z-index: 20;
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+    max-height: 220px;
+    overflow: auto;
+}
+
+.follower-option {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.38rem 0.5rem;
+    border-bottom: 1px solid #eef2f7;
+    text-align: left;
+    cursor: pointer;
+}
+
+.follower-option:last-child {
+    border-bottom: 0;
+}
+
+.follower-option:hover {
+    background: #f0fdf4;
+}
+
+.follower-meta {
+    display: grid;
+    gap: 0.12rem;
+}
+
+.follower-meta strong {
+    font-size: 0.9rem;
+}
+
+.follower-meta small {
+    color: #64748b;
+    font-size: 0.77rem;
+}
+
+.followers-empty {
+    margin: 0;
+    padding: 0.6rem;
+    color: #64748b;
+}
+
+.followers-tags-modern {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.follower-tag-modern {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px solid #b9ccdf;
+    border-radius: 999px;
+    background: #eff6ff;
+    color: #0f172a;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.8rem;
+}
+
+.follower-tag-modern button {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    line-height: 1;
+    cursor: pointer;
+    color: #475569;
+}
+
+.follower-avatar {
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #0f172a;
+    color: #fff;
+    font-size: 0.66rem;
+    font-weight: 700;
+}
+
+.follower-name {
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 .actions {
     display: flex;
