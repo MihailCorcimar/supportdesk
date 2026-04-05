@@ -1,8 +1,9 @@
-<script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
+﻿<script setup>
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import api from '../api/client';
 import { useAuthStore } from '../stores/auth';
+import UserAvatar from '../components/UserAvatar.vue';
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -14,6 +15,7 @@ const fieldErrors = ref({});
 const messageAttachments = ref([]);
 const options = ref({
     inboxes: [],
+    triage_inbox: null,
     entities: [],
     contacts: [],
     operators: [],
@@ -33,18 +35,25 @@ const form = reactive({
     priority: 'medium',
     status: 'open',
     assigned_operator_id: '',
-    cc_emails: '',
     follower_user_ids: [],
 });
 
 const followerSearch = ref('');
 const followerPickerOpen = ref(false);
+const operatorSearch = ref('');
+const operatorPickerOpen = ref(false);
 
 const priorityLabels = {
     low: 'Baixa',
     medium: 'Media',
     high: 'Alta',
     urgent: 'Urgente',
+};
+const priorityDotClass = {
+    low: 'is-low',
+    medium: 'is-medium',
+    high: 'is-high',
+    urgent: 'is-urgent',
 };
 
 const statusLabels = {
@@ -54,6 +63,15 @@ const statusLabels = {
 };
 
 const isOperator = computed(() => auth.state.user?.role === 'operator');
+const isClient = computed(() => auth.state.user?.role === 'client');
+const isAdminOperator = computed(() => isOperator.value && Boolean(auth.state.user?.is_admin));
+const mustUseTriageInbox = computed(() => isClient.value);
+const canSetOperationalDataOnCreate = computed(() => isOperator.value && isAdminOperator.value);
+const triageInboxId = computed(() => {
+    const id = options.value?.triage_inbox?.id;
+    return id ? String(id) : '';
+});
+const ticketOwnerName = computed(() => auth.state.user?.name || '-');
 
 const availableContacts = computed(() => {
     if (!form.entity_id) return options.value.contacts;
@@ -62,9 +80,26 @@ const availableContacts = computed(() => {
     );
 });
 
+const followersInScope = computed(() => {
+    const followers = options.value.followers || [];
+
+    if (!isOperator.value || isAdminOperator.value) {
+        return followers;
+    }
+
+    const selectedInboxId = Number(form.inbox_id || 0);
+    if (!selectedInboxId) {
+        return [];
+    }
+
+    return followers.filter(
+        (follower) => Array.isArray(follower.inbox_ids) && follower.inbox_ids.includes(selectedInboxId),
+    );
+});
+
 const filteredFollowers = computed(() => {
     const term = followerSearch.value.trim().toLowerCase();
-    const followers = options.value.followers || [];
+    const followers = followersInScope.value;
 
     if (!term) return followers;
 
@@ -85,6 +120,42 @@ const followerSuggestions = computed(() => {
         .filter((follower) => !selected.has(Number(follower.id)))
         .slice(0, 8);
 });
+const operatorCandidates = computed(() => {
+    const allOperators = (options.value.followers || []).filter((follower) => follower.role === 'operator');
+    const selectedInboxId = Number(form.inbox_id || 0);
+
+    if (!selectedInboxId) {
+        return allOperators;
+    }
+
+    return allOperators.filter(
+        (operator) => Array.isArray(operator.inbox_ids) && operator.inbox_ids.includes(selectedInboxId),
+    );
+});
+const filteredOperators = computed(() => {
+    const term = operatorSearch.value.trim().toLowerCase();
+    if (!term) return operatorCandidates.value;
+
+    return operatorCandidates.value.filter((operator) => {
+        const name = (operator.name || '').toLowerCase();
+        const email = (operator.email || '').toLowerCase();
+        return name.includes(term) || email.includes(term);
+    });
+});
+const operatorSuggestions = computed(() => {
+    const selectedId = Number(form.assigned_operator_id || 0);
+    return filteredOperators.value
+        .filter((operator) => Number(operator.id) !== selectedId)
+        .slice(0, 8);
+});
+const selectedOperator = computed(() => {
+    const selectedId = Number(form.assigned_operator_id || 0);
+    if (!selectedId) return null;
+
+    return (options.value.followers || []).find(
+        (follower) => Number(follower.id) === selectedId && follower.role === 'operator',
+    ) || null;
+});
 
 const loadMeta = async () => {
     loading.value = true;
@@ -98,7 +169,14 @@ const loadMeta = async () => {
             form.entity_id = String(options.value.entities[0].id);
         }
 
-        if (options.value.inboxes.length === 1) {
+        if (mustUseTriageInbox.value) {
+            if (!triageInboxId.value) {
+                error.value = 'Inbox Geral nao esta configurada. Contacta um operador admin.';
+                return;
+            }
+
+            form.inbox_id = triageInboxId.value;
+        } else if (options.value.inboxes.length === 1) {
             form.inbox_id = String(options.value.inboxes[0].id);
         }
     } catch (exception) {
@@ -113,8 +191,16 @@ const submit = async () => {
     error.value = '';
     fieldErrors.value = {};
 
+    const selectedInboxId = mustUseTriageInbox.value ? triageInboxId.value : form.inbox_id;
+    if (!selectedInboxId) {
+        fieldErrors.value = { inbox_id: ['Inbox obrigatoria.'] };
+        error.value = 'Seleciona uma inbox para continuar.';
+        submitting.value = false;
+        return;
+    }
+
     const payload = new FormData();
-    payload.append('inbox_id', String(Number(form.inbox_id)));
+    payload.append('inbox_id', selectedInboxId);
     payload.append('entity_id', String(Number(form.entity_id)));
     payload.append('subject', form.subject);
     payload.append('description', form.description);
@@ -126,15 +212,11 @@ const submit = async () => {
         payload.append('contact_id', String(Number(form.contact_id)));
     }
 
-    if (form.cc_emails.trim() !== '') {
-        payload.append('cc_emails', form.cc_emails);
-    }
-
     (form.follower_user_ids || []).forEach((id) => {
         payload.append('follower_user_ids[]', String(Number(id)));
     });
 
-    if (isOperator.value) {
+    if (canSetOperationalDataOnCreate.value) {
         payload.append('status', form.status);
         if (form.assigned_operator_id) {
             payload.append('assigned_operator_id', String(Number(form.assigned_operator_id)));
@@ -185,19 +267,65 @@ const removeFollower = (id) => {
     form.follower_user_ids = (form.follower_user_ids || [])
         .map((item) => Number(item))
         .filter((item) => item !== normalizedId);
+
+    if (Number(form.assigned_operator_id || 0) === normalizedId) {
+        form.assigned_operator_id = '';
+    }
 };
 
 const followerRoleLabel = (role) => (role === 'operator' ? 'Operador' : 'Cliente');
-const followerInitials = (name) => {
-    const chunks = String(name || '').trim().split(/\s+/).filter(Boolean);
-    if (!chunks.length) return '?';
-    if (chunks.length === 1) return chunks[0].slice(0, 2).toUpperCase();
-    return `${chunks[0][0] || ''}${chunks[chunks.length - 1][0] || ''}`.toUpperCase();
+const findFollowerById = (id) => {
+    const normalizedId = Number(id);
+    return (options.value.followers || []).find((follower) => Number(follower.id) === normalizedId) || null;
+};
+const canOperatorBeAssignedForSelectedInbox = (operatorId) => {
+    const selectedInboxId = Number(form.inbox_id || 0);
+    if (!selectedInboxId) return false;
+
+    const follower = findFollowerById(operatorId);
+    if (!follower || follower.role !== 'operator') return false;
+
+    return Array.isArray(follower.inbox_ids) && follower.inbox_ids.includes(selectedInboxId);
 };
 const chooseFollower = (id) => {
     toggleFollower(id);
+
+    if (canSetOperationalDataOnCreate.value && !form.assigned_operator_id) {
+        const follower = findFollowerById(id);
+        if (follower?.role === 'operator' && canOperatorBeAssignedForSelectedInbox(follower.id)) {
+            form.assigned_operator_id = String(Number(follower.id));
+        }
+    }
+
     followerSearch.value = '';
-    followerPickerOpen.value = true;
+    followerPickerOpen.value = false;
+};
+const chooseOperator = (id) => {
+    form.assigned_operator_id = String(Number(id));
+    operatorSearch.value = '';
+    operatorPickerOpen.value = false;
+};
+const clearAssignedOperator = () => {
+    form.assigned_operator_id = '';
+    operatorSearch.value = '';
+    operatorPickerOpen.value = false;
+};
+const handleOperatorSearchEnter = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    const first = operatorSuggestions.value[0];
+    if (first) chooseOperator(first.id);
+};
+const closeOperatorPicker = () => {
+    setTimeout(() => {
+        operatorPickerOpen.value = false;
+    }, 120);
+};
+const onOperatorSearchInput = () => {
+    operatorPickerOpen.value = operatorSearch.value.trim().length > 0;
+};
+const onOperatorSearchFocus = () => {
+    operatorPickerOpen.value = operatorSearch.value.trim().length > 0;
 };
 const handleFollowerSearchEnter = (event) => {
     if (event.key !== 'Enter') return;
@@ -210,6 +338,35 @@ const closeFollowerPicker = () => {
         followerPickerOpen.value = false;
     }, 120);
 };
+const onFollowerSearchInput = () => {
+    followerPickerOpen.value = followerSearch.value.trim().length > 0;
+};
+const onFollowerSearchFocus = () => {
+    followerPickerOpen.value = followerSearch.value.trim().length > 0;
+};
+
+watch(
+    () => form.inbox_id,
+    () => {
+        if (!isOperator.value) {
+            return;
+        }
+
+        if (!isAdminOperator.value) {
+            const allowedIds = new Set(followersInScope.value.map((follower) => Number(follower.id)));
+            form.follower_user_ids = (form.follower_user_ids || [])
+                .map((id) => Number(id))
+                .filter((id) => allowedIds.has(id));
+        }
+
+        if (
+            form.assigned_operator_id
+            && !canOperatorBeAssignedForSelectedInbox(form.assigned_operator_id)
+        ) {
+            form.assigned_operator_id = '';
+        }
+    },
+);
 
 onMounted(loadMeta);
 </script>
@@ -229,7 +386,7 @@ onMounted(loadMeta);
             <p v-if="error" class="error">{{ error }}</p>
 
             <form v-if="!loading" @submit.prevent="submit" class="grid">
-                <label>
+                <label v-if="!mustUseTriageInbox">
                     Inbox
                     <select v-model="form.inbox_id" required>
                         <option value="">Selecionar</option>
@@ -262,6 +419,12 @@ onMounted(loadMeta);
                     <small class="field-error">{{ fieldErrors.contact_id?.[0] }}</small>
                 </label>
 
+                <label>
+                    Dono do ticket
+                    <input :value="ticketOwnerName" type="text" disabled />
+                    <small class="field-hint">Utilizador autenticado que cria o ticket.</small>
+                </label>
+
                 <label class="col-span-2">
                     Assunto
                     <input v-model="form.subject" required maxlength="255" />
@@ -278,15 +441,24 @@ onMounted(loadMeta);
 
                 <label>
                     Prioridade
-                    <select v-model="form.priority" required>
-                        <option v-for="priority in options.priorities" :key="priority" :value="priority">
-                            {{ priorityLabels[priority] ?? priority }}
-                        </option>
-                    </select>
+                    <div class="priority-picker">
+                        <button
+                            type="button"
+                            v-for="priority in options.priorities"
+                            :key="priority"
+                            class="priority-option"
+                            :class="{ 'is-selected': form.priority === priority }"
+                            :aria-pressed="form.priority === priority ? 'true' : 'false'"
+                            @click="form.priority = priority"
+                        >
+                            <span class="priority-dot" :class="priorityDotClass[priority] || ''"></span>
+                            <span>{{ priorityLabels[priority] ?? priority }}</span>
+                        </button>
+                    </div>
                     <small class="field-error">{{ fieldErrors.priority?.[0] }}</small>
                 </label>
 
-                <label v-if="isOperator">
+                <label v-if="canSetOperationalDataOnCreate">
                     Estado inicial
                     <select v-model="form.status">
                         <option v-for="status in options.create_statuses" :key="status" :value="status">
@@ -296,31 +468,83 @@ onMounted(loadMeta);
                     <small class="field-error">{{ fieldErrors.status?.[0] }}</small>
                 </label>
 
-                <label v-if="isOperator">
-                    Operador atribuido
-                    <select v-model="form.assigned_operator_id">
-                        <option value="">Sem atribuicao</option>
-                        <option v-for="operator in options.operators" :key="operator.id" :value="String(operator.id)">
-                            {{ operator.name }}
-                        </option>
-                    </select>
+                <label v-if="canSetOperationalDataOnCreate">
+                    Operador responsavel
+                    <div class="followers-picker-modern operator-picker-modern">
+                        <div v-if="selectedOperator" class="followers-tags-modern">
+                            <span class="follower-tag-modern">
+                                <UserAvatar
+                                    class="follower-avatar"
+                                    :name="selectedOperator.name"
+                                    :src="selectedOperator.avatar_url"
+                                    :size="22"
+                                />
+                                <span class="follower-name">{{ selectedOperator.name }}</span>
+                                <button type="button" @click="clearAssignedOperator">&times;</button>
+                            </span>
+                        </div>
+
+                        <input
+                            v-model="operatorSearch"
+                            type="search"
+                            placeholder="Escreve nome ou email do operador"
+                            @focus="onOperatorSearchFocus"
+                            @input="onOperatorSearchInput"
+                            @blur="closeOperatorPicker"
+                            @keydown="handleOperatorSearchEnter"
+                        />
+
+                        <div v-if="operatorPickerOpen" class="followers-suggestions">
+                            <button
+                                type="button"
+                                class="follower-option follower-option-clear"
+                                @click.prevent="clearAssignedOperator"
+                            >
+                                <span class="follower-avatar follower-avatar-clear">-</span>
+                                <span class="follower-meta">
+                                    <strong>Sem atribuicao</strong>
+                                </span>
+                            </button>
+
+                            <button
+                                type="button"
+                                v-for="operator in operatorSuggestions"
+                                :key="`operator-opt-${operator.id}`"
+                                class="follower-option"
+                                @click.prevent="chooseOperator(operator.id)"
+                            >
+                                <UserAvatar
+                                    class="follower-avatar"
+                                    :name="operator.name"
+                                    :src="operator.avatar_url"
+                                    :size="22"
+                                />
+                                <span class="follower-meta">
+                                    <strong>{{ operator.name }}</strong>
+                                    <small>{{ operator.email }} &middot; Operador</small>
+                                </span>
+                            </button>
+
+                            <p v-if="!operatorSuggestions.length" class="followers-empty">Sem resultados.</p>
+                        </div>
+                    </div>
+                    <small class="field-hint">Pessoa que vai tratar o ticket.</small>
                     <small class="field-error">{{ fieldErrors.assigned_operator_id?.[0] }}</small>
                 </label>
 
-                <label class="col-span-2">
-                    Conhecimento (emails CC separados por virgula)
-                    <input v-model="form.cc_emails" placeholder="exemplo@dominio.pt, segundo@dominio.pt" />
-                    <small class="field-error">{{ fieldErrors.cc_emails?.[0] }}</small>
-                </label>
-
-                <label class="col-span-2">
+                <label :class="canSetOperationalDataOnCreate ? '' : 'col-span-2'">
                     Conhecimento (utilizadores)
                     <div class="followers-picker-modern">
                         <div v-if="selectedFollowers.length" class="followers-tags-modern">
                             <span v-for="follower in selectedFollowers" :key="`sel-${follower.id}`" class="follower-tag-modern">
-                                <span class="follower-avatar">{{ followerInitials(follower.name) }}</span>
+                                <UserAvatar
+                                    class="follower-avatar"
+                                    :name="follower.name"
+                                    :src="follower.avatar_url"
+                                    :size="22"
+                                />
                                 <span class="follower-name">{{ follower.name }}</span>
-                                <button type="button" @click="removeFollower(follower.id)">×</button>
+                                <button type="button" @click="removeFollower(follower.id)">&times;</button>
                             </span>
                         </div>
 
@@ -328,7 +552,8 @@ onMounted(loadMeta);
                             v-model="followerSearch"
                             type="search"
                             placeholder="Escreve nome ou email para adicionar"
-                            @focus="followerPickerOpen = true"
+                            @focus="onFollowerSearchFocus"
+                            @input="onFollowerSearchInput"
                             @blur="closeFollowerPicker"
                             @keydown="handleFollowerSearchEnter"
                         />
@@ -339,18 +564,29 @@ onMounted(loadMeta);
                                 v-for="follower in followerSuggestions"
                                 :key="`opt-${follower.id}`"
                                 class="follower-option"
-                                @mousedown.prevent="chooseFollower(follower.id)"
+                                @click.prevent="chooseFollower(follower.id)"
                             >
-                                <span class="follower-avatar">{{ followerInitials(follower.name) }}</span>
+                                <UserAvatar
+                                    class="follower-avatar"
+                                    :name="follower.name"
+                                    :src="follower.avatar_url"
+                                    :size="22"
+                                />
                                 <span class="follower-meta">
                                     <strong>{{ follower.name }}</strong>
-                                    <small>{{ follower.email }} · {{ followerRoleLabel(follower.role) }}</small>
+                                    <small>{{ follower.email }} &middot; {{ followerRoleLabel(follower.role) }}</small>
                                 </span>
                             </button>
 
                             <p v-if="!followerSuggestions.length" class="followers-empty">Sem resultados.</p>
                         </div>
                     </div>
+                    <small
+                        v-if="isOperator && !isAdminOperator && !form.inbox_id"
+                        class="field-hint"
+                    >
+                        Seleciona primeiro a inbox para listar utilizadores em conhecimento.
+                    </small>
                     <small class="field-error">{{ fieldErrors.follower_user_ids?.[0] || fieldErrors['follower_user_ids.0']?.[0] }}</small>
                 </label>
 
@@ -446,6 +682,48 @@ input, select, textarea {
 
 textarea { min-height: 130px; resize: vertical; }
 
+.priority-picker {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.45rem;
+}
+
+.priority-option {
+    border: 1px solid #dbe4ee;
+    background: #fff;
+    border-radius: 8px;
+    padding: 0.55rem 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    cursor: pointer;
+    color: #334155;
+    font-weight: 500;
+}
+
+.priority-option:hover {
+    border-color: #94a3b8;
+}
+
+.priority-option.is-selected {
+    border-color: #1F4E79;
+    background: #EDF3FA;
+    color: #0f172a;
+}
+
+.priority-dot {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 999px;
+    display: inline-block;
+}
+
+.priority-dot.is-low { background: #3b82f6; }
+.priority-dot.is-medium { background: #f59e0b; }
+.priority-dot.is-high { background: #ef4444; }
+.priority-dot.is-urgent { background: #b91c1c; }
+
 .followers-picker-modern {
     position: relative;
     border: 1px solid #dbe4ee;
@@ -489,6 +767,23 @@ textarea { min-height: 130px; resize: vertical; }
 
 .follower-option:hover {
     background: #f0fdf4;
+}
+
+.follower-option-clear {
+    background: #f8fafc;
+}
+
+.follower-avatar-clear {
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #64748b;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
 }
 
 .follower-meta {
@@ -539,16 +834,7 @@ textarea { min-height: 130px; resize: vertical; }
 }
 
 .follower-avatar {
-    width: 1.35rem;
-    height: 1.35rem;
-    border-radius: 999px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: #0f172a;
-    color: #fff;
-    font-size: 0.66rem;
-    font-weight: 700;
+    flex: 0 0 auto;
 }
 
 .follower-name {
@@ -576,9 +862,9 @@ textarea { min-height: 130px; resize: vertical; }
 }
 
 .btn-primary {
-    background: #0f766e;
+    background: #1F4E79;
     color: #fff;
-    border-color: #0f766e;
+    border-color: #1F4E79;
 }
 
 .btn-secondary {
@@ -596,12 +882,20 @@ textarea { min-height: 130px; resize: vertical; }
     min-height: 1rem;
 }
 
+.field-hint {
+    color: #64748b;
+    min-height: 1rem;
+}
+
 .muted { color: #475569; }
 .error { color: #991b1b; }
 
 @media (max-width: 900px) {
     .grid { grid-template-columns: 1fr; }
     .col-span-2, .col-span-3 { grid-column: span 1; }
+    .priority-picker { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>
+
+
 

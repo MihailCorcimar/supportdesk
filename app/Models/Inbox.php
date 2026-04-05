@@ -51,4 +51,12 @@ class Inbox extends Model
             ->withPivot('can_manage_users')
             ->withTimestamps();
     }
+
+    /**
+     * Get notification templates scoped to this inbox.
+     */
+    public function notificationTemplates(): HasMany
+    {
+        return $this->hasMany(InboxNotificationTemplate::class);
+    }
 }

@@ -396,7 +396,7 @@ th, td {
 }
 
 .ticket-link {
-    color: #0f766e;
+    color: #1F4E79;
     text-decoration: none;
     font-weight: 600;
 }
@@ -404,8 +404,8 @@ th, td {
 .ticket-link:hover { text-decoration: underline; }
 
 button {
-    border: 1px solid #0f766e;
-    background: #0f766e;
+    border: 1px solid #1F4E79;
+    background: #1F4E79;
     color: #fff;
     border-radius: 8px;
     padding: 0.5rem 0.65rem;
@@ -427,9 +427,9 @@ button.ghost {
 }
 
 .success {
-    border: 1px solid #a7f3d0;
-    background: #ecfdf5;
-    color: #065f46;
+    border: 1px solid #c8d8ea;
+    background: #EDF3FA;
+    color: #1F4E79;
     border-radius: 8px;
     padding: 0.65rem;
 }
@@ -505,3 +505,4 @@ textarea {
     .form-grid { grid-template-columns: 1fr; }
 }
 </style>
+

@@ -28,6 +28,7 @@ class User extends Authenticatable
         'role',
         'is_active',
         'is_admin',
+        'avatar_path',
     ];
 
     /**

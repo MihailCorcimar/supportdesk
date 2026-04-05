@@ -6,6 +6,7 @@ import ResetPasswordPage from '../pages/ResetPasswordPage.vue';
 import AcceptInvitePage from '../pages/AcceptInvitePage.vue';
 import DashboardPage from '../pages/DashboardPage.vue';
 import NotificationsPage from '../pages/NotificationsPage.vue';
+import ProfilePage from '../pages/ProfilePage.vue';
 import ManagementPage from '../pages/ManagementPage.vue';
 import TicketsListPage from '../pages/TicketsListPage.vue';
 import TicketCreatePage from '../pages/TicketCreatePage.vue';
@@ -67,6 +68,12 @@ const routes = [
         path: '/notifications',
         name: 'notifications.index',
         component: NotificationsPage,
+        meta: { requiresAuth: true },
+    },
+    {
+        path: '/profile',
+        name: 'profile',
+        component: ProfilePage,
         meta: { requiresAuth: true },
     },
     {

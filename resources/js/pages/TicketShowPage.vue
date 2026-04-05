@@ -1,19 +1,20 @@
-﻿<script setup>
+<script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import api from '../api/client';
 import { useAuthStore } from '../stores/auth';
+import UserAvatar from '../components/UserAvatar.vue';
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const availableTopTabs = ['conversation', 'task', 'activity_logs', 'notes'];
-const normalizeTopTab = (tab) => (availableTopTabs.includes(tab) ? tab : 'conversation');
+const normalizeTopTab = (tab) => (availableTopTabs.includes(tab) ?tab : 'conversation');
 
 const loading = ref(false);
 const error = ref('');
 const quickActionMessage = ref('');
-const activeTopTab = ref(normalizeTopTab(typeof route.query.tab === 'string' ? route.query.tab : 'conversation'));
+const activeTopTab = ref(normalizeTopTab(typeof route.query.tab === 'string' ?route.query.tab : 'conversation'));
 const ticket = ref(null);
 const messageBody = ref('');
 const messageFiles = ref([]);
@@ -25,6 +26,9 @@ const sendingMessage = ref(false);
 const sendingNote = ref(false);
 const statusMenuOpen = ref(false);
 const pinPending = ref(false);
+const detailsPanelOpen = ref(false);
+const transferOperatorOpen = ref(false);
+const detailsFromQuery = (value) => ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
 
 const statusForm = reactive({ status: '' });
 const assignmentForm = reactive({ assigned_operator_id: '' });
@@ -37,6 +41,9 @@ const metadataForm = reactive({
     follower_user_ids: [],
 });
 const followerSearch = ref('');
+const panelOperatorSearch = ref('');
+const panelOperatorPickerOpen = ref(false);
+const panelFollowerPickerOpen = ref(false);
 
 const statusLabels = {
     open: 'Aberto',
@@ -52,6 +59,15 @@ const priorityLabels = {
     high: 'Alta',
     urgent: 'Urgente',
 };
+const priorityDotClass = {
+    low: 'is-low',
+    medium: 'is-medium',
+    high: 'is-high',
+    urgent: 'is-urgent',
+};
+
+let metadataAutoSaveTimer = null;
+let metadataAutoSavePending = false;
 
 const typeLabels = {
     question: 'Questao',
@@ -82,8 +98,8 @@ const canAddNotes = computed(() => isOperator.value && ticket.value?.permissions
 const statusOrder = ['open', 'in_progress', 'pending', 'closed', 'cancelled'];
 const headerStatusOptions = computed(() => statusOrder.filter((status) => status !== ticket.value?.status));
 const isAlreadyClosed = computed(() => ticket.value?.status === 'closed');
-const previousTicket = computed(() => ticket.value?.navigation?.previous ?? null);
-const nextTicket = computed(() => ticket.value?.navigation?.next ?? null);
+const previousTicket = computed(() => ticket.value?.navigation?.previous || null);
+const nextTicket = computed(() => ticket.value?.navigation?.next || null);
 const filteredFollowers = computed(() => {
     const term = followerSearch.value.trim().toLowerCase();
     const followers = ticket.value?.available_followers || [];
@@ -100,7 +116,51 @@ const selectedFollowers = computed(() => {
     const selected = new Set((metadataForm.follower_user_ids || []).map((id) => Number(id)));
     return (ticket.value?.available_followers || []).filter((follower) => selected.has(Number(follower.id)));
 });
-let conversationRefreshTimer = null;
+const panelFollowerSuggestions = computed(() => {
+    const term = followerSearch.value.trim();
+    if (!term) return [];
+
+    const selectedIds = new Set((metadataForm.follower_user_ids || []).map((id) => Number(id)));
+    return filteredFollowers.value
+        .filter((follower) => !selectedIds.has(Number(follower.id)))
+        .slice(0, 8);
+});
+const panelOperatorCandidates = computed(() => (ticket.value?.operators || []));
+const filteredPanelOperators = computed(() => {
+    const term = panelOperatorSearch.value.trim().toLowerCase();
+    if (!term) return panelOperatorCandidates.value;
+
+    return panelOperatorCandidates.value.filter((operator) => {
+        const name = (operator.name || '').toLowerCase();
+        const email = (operator.email || '').toLowerCase();
+        return name.includes(term) || email.includes(term);
+    });
+});
+const panelOperatorSuggestions = computed(() => {
+    const selectedId = Number(assignmentForm.assigned_operator_id || 0);
+    return filteredPanelOperators.value
+        .filter((operator) => Number(operator.id) !== selectedId)
+        .slice(0, 8);
+});
+const selectedPanelOperator = computed(() => {
+    const selectedId = Number(assignmentForm.assigned_operator_id || 0);
+    if (!selectedId) return null;
+    return (ticket.value?.operators || []).find((operator) => Number(operator.id) === selectedId) || null;
+});
+const assignedOperatorWithEmail = computed(() => {
+    if (!ticket.value) return null;
+    const selectedId = Number(assignmentForm.assigned_operator_id || 0);
+    if (!selectedId) return null;
+
+    const fromOperators = (ticket.value.operators || []).find((operator) => Number(operator.id) === selectedId);
+    if (fromOperators) return fromOperators;
+
+    if (ticket.value.assigned_operator && Number(ticket.value.assigned_operator.id) === selectedId) {
+        return ticket.value.assigned_operator;
+    }
+
+    return null;
+});
 
 const loadTicket = async () => {
     loading.value = true;
@@ -112,13 +172,18 @@ const loadTicket = async () => {
 
         statusForm.status = ticket.value.status;
         assignmentForm.assigned_operator_id = ticket.value.assigned_operator?.id
-            ? String(ticket.value.assigned_operator.id)
+            ?String(ticket.value.assigned_operator.id)
             : '';
+        panelOperatorSearch.value = '';
+        panelOperatorPickerOpen.value = false;
+        transferOperatorOpen.value = false;
+        panelFollowerPickerOpen.value = false;
+        followerSearch.value = '';
 
         metadataForm.subject = ticket.value.subject || '';
         metadataForm.priority = ticket.value.priority || 'medium';
         metadataForm.type = ticket.value.type || 'request';
-        metadataForm.inbox_id = ticket.value.inbox?.id ? String(ticket.value.inbox.id) : '';
+        metadataForm.inbox_id = ticket.value.inbox?.id ?String(ticket.value.inbox.id) : '';
         metadataForm.cc_emails = (ticket.value.cc_emails || []).join(', ');
         metadataForm.follower_user_ids = (ticket.value.followers || []).map((follower) => Number(follower.id));
     } catch (exception) {
@@ -128,13 +193,21 @@ const loadTicket = async () => {
     }
 };
 
+const touchTicketLastActivity = () => {
+    if (!ticket.value) return;
+    ticket.value.last_activity_at = new Date().toISOString();
+};
+
 const updateStatus = async () => {
     savingStatus.value = true;
     error.value = '';
 
     try {
         await api.patch(`/tickets/${route.params.id}/status`, { status: statusForm.status });
-        await loadTicket();
+        if (ticket.value) {
+            ticket.value.status = statusForm.status;
+            touchTicketLastActivity();
+        }
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao atualizar estado.';
     } finally {
@@ -187,6 +260,10 @@ const focusComposer = async () => {
     }
 };
 
+const toggleDetailsPanel = () => {
+    detailsPanelOpen.value = !detailsPanelOpen.value;
+};
+
 const copyTicketId = async () => {
     if (!ticket.value?.ticket_number) return;
 
@@ -217,7 +294,7 @@ const toggleTicketPin = async () => {
         }
 
         ticket.value.is_pinned = !ticket.value.is_pinned;
-        quickActionMessage.value = ticket.value.is_pinned ? 'Ticket fixado' : 'Ticket desafixado';
+        quickActionMessage.value = ticket.value.is_pinned ?'Ticket fixado' : 'Ticket desafixado';
         window.dispatchEvent(new CustomEvent('supportdesk:conversations-updated'));
     } catch {
         quickActionMessage.value = 'Não foi possível atualizar pin';
@@ -246,18 +323,40 @@ const updateAssignment = async () => {
     try {
         await api.patch(`/tickets/${route.params.id}/assignment`, {
             assigned_operator_id: assignmentForm.assigned_operator_id
-                ? Number(assignmentForm.assigned_operator_id)
+                ?Number(assignmentForm.assigned_operator_id)
                 : null,
         });
-        await loadTicket();
+        if (ticket.value) {
+            const selectedId = Number(assignmentForm.assigned_operator_id || 0);
+            const selectedOperator = selectedId
+                ?(ticket.value.operators || []).find((operator) => Number(operator.id) === selectedId) || null
+                : null;
+            ticket.value.assigned_operator = selectedOperator
+                ?{
+                    id: selectedOperator.id,
+                    name: selectedOperator.name,
+                }
+                : null;
+            touchTicketLastActivity();
+        }
+        quickActionMessage.value = 'Operador atualizado';
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao atualizar atribuicao.';
+        quickActionMessage.value = 'Não foi possível transferir operador';
     } finally {
         savingAssignment.value = false;
+        setTimeout(() => {
+            quickActionMessage.value = '';
+        }, 1600);
     }
 };
 
 const updateMetadata = async () => {
+    if (savingMetadata.value) {
+        metadataAutoSavePending = true;
+        return;
+    }
+
     savingMetadata.value = true;
     error.value = '';
 
@@ -266,20 +365,101 @@ const updateMetadata = async () => {
             subject: metadataForm.subject,
             priority: metadataForm.priority,
             type: metadataForm.type,
-            inbox_id: metadataForm.inbox_id ? Number(metadataForm.inbox_id) : null,
+            inbox_id: metadataForm.inbox_id ?Number(metadataForm.inbox_id) : null,
             cc_emails: metadataForm.cc_emails,
             follower_user_ids: metadataForm.follower_user_ids,
         });
-        await loadTicket();
+        if (ticket.value) {
+            ticket.value.subject = metadataForm.subject;
+            ticket.value.priority = metadataForm.priority;
+            ticket.value.type = metadataForm.type;
+            ticket.value.cc_emails = String(metadataForm.cc_emails || '')
+                .split(',')
+                .map((email) => email.trim())
+                .filter(Boolean);
+
+            const targetInboxId = Number(metadataForm.inbox_id || 0);
+            if (targetInboxId) {
+                const selectedInbox = (ticket.value.available_inboxes || []).find(
+                    (inbox) => Number(inbox.id) === targetInboxId,
+                );
+                if (selectedInbox) {
+                    ticket.value.inbox = {
+                        id: selectedInbox.id,
+                        name: selectedInbox.name,
+                    };
+                }
+            }
+
+            const selectedFollowerIds = new Set(
+                (metadataForm.follower_user_ids || []).map((id) => Number(id)),
+            );
+            ticket.value.followers = (ticket.value.available_followers || []).filter(
+                (follower) => selectedFollowerIds.has(Number(follower.id)),
+            );
+            touchTicketLastActivity();
+        }
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao atualizar metadados.';
     } finally {
         savingMetadata.value = false;
+        if (metadataAutoSavePending) {
+            metadataAutoSavePending = false;
+            await updateMetadata();
+        }
     }
 };
 
+const autoSaveStatusFromPanel = async () => {
+    if (!isOperator.value || !canUpdateStatus.value) return;
+    await updateStatus();
+};
+
+const autoSaveAssignmentFromPanel = async () => {
+    if (!isOperator.value || !canAssign.value) return;
+    await updateAssignment();
+};
+
+const triggerMetadataAutoSave = () => {
+    if (!isOperator.value || !canUpdateMetadata.value) return;
+
+    if (metadataAutoSaveTimer) {
+        clearTimeout(metadataAutoSaveTimer);
+    }
+
+    metadataAutoSaveTimer = setTimeout(() => {
+        metadataAutoSaveTimer = null;
+        updateMetadata();
+    }, 350);
+};
+
+const flushMetadataAutoSave = () => {
+    if (!isOperator.value || !canUpdateMetadata.value) return;
+
+    if (metadataAutoSaveTimer) {
+        clearTimeout(metadataAutoSaveTimer);
+        metadataAutoSaveTimer = null;
+    }
+
+    updateMetadata();
+};
+
+const handleDetailsSubjectInput = () => {
+    triggerMetadataAutoSave();
+};
+
+const handleDetailsMetadataChange = () => {
+    flushMetadataAutoSave();
+};
+
+const handleDetailsPrioritySelect = (priority) => {
+    if (!priority || metadataForm.priority === priority) return;
+    metadataForm.priority = priority;
+    flushMetadataAutoSave();
+};
+
 const handleFilesChange = (event) => {
-    const files = event.target.files ? [...event.target.files] : [];
+    const files = event.target.files ?[...event.target.files] : [];
     messageFiles.value = files;
 };
 
@@ -302,7 +482,98 @@ const removeFollower = (id) => {
         .filter((item) => item !== normalizedId);
 };
 
-const followerRoleLabel = (role) => (role === 'operator' ? 'Operador' : 'Cliente');
+const followerRoleLabel = (role) => (role === 'operator' ?'Operador' : 'Cliente');
+const userAvatarUrl = (user) => String(user?.avatar_url || '').trim();
+const choosePanelOperator = async (id) => {
+    assignmentForm.assigned_operator_id = String(Number(id));
+    panelOperatorSearch.value = '';
+    panelOperatorPickerOpen.value = false;
+    transferOperatorOpen.value = false;
+    await autoSaveAssignmentFromPanel();
+};
+const clearPanelAssignedOperator = async () => {
+    assignmentForm.assigned_operator_id = '';
+    panelOperatorSearch.value = '';
+    panelOperatorPickerOpen.value = false;
+    transferOperatorOpen.value = false;
+    await autoSaveAssignmentFromPanel();
+};
+const handlePanelOperatorSearchEnter = async (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    const first = panelOperatorSuggestions.value[0];
+    if (first) {
+        await choosePanelOperator(first.id);
+    } else {
+        await clearPanelAssignedOperator();
+    }
+};
+const closePanelOperatorPicker = () => {
+    setTimeout(() => {
+        panelOperatorPickerOpen.value = false;
+    }, 120);
+};
+const onPanelOperatorSearchInput = () => {
+    panelOperatorPickerOpen.value = panelOperatorSearch.value.trim().length > 0;
+};
+const onPanelOperatorSearchFocus = () => {
+    panelOperatorPickerOpen.value = panelOperatorSearch.value.trim().length > 0;
+};
+const toggleTransferOperator = () => {
+    transferOperatorOpen.value = !transferOperatorOpen.value;
+    if (!transferOperatorOpen.value) {
+        panelOperatorPickerOpen.value = false;
+        panelOperatorSearch.value = '';
+    }
+};
+const addFollowerFromPanel = () => {
+    const first = panelFollowerSuggestions.value[0];
+    if (first) {
+        const normalizedId = Number(first.id);
+        const current = (metadataForm.follower_user_ids || []).map((item) => Number(item));
+        if (!current.includes(normalizedId)) {
+            metadataForm.follower_user_ids = [...current, normalizedId];
+            flushMetadataAutoSave();
+        }
+    }
+
+    followerSearch.value = '';
+    panelFollowerPickerOpen.value = false;
+};
+const chooseFollowerFromPanel = (id) => {
+    const normalizedId = Number(id);
+    const current = (metadataForm.follower_user_ids || []).map((item) => Number(item));
+    if (!current.includes(normalizedId)) {
+        metadataForm.follower_user_ids = [...current, normalizedId];
+        flushMetadataAutoSave();
+    }
+
+    followerSearch.value = '';
+    panelFollowerPickerOpen.value = false;
+};
+const removeFollowerFromPanel = (id) => {
+    const normalizedId = Number(id);
+    metadataForm.follower_user_ids = (metadataForm.follower_user_ids || [])
+        .map((item) => Number(item))
+        .filter((item) => item !== normalizedId);
+    flushMetadataAutoSave();
+};
+const handlePanelFollowerSearchEnter = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    addFollowerFromPanel();
+};
+const closePanelFollowerPicker = () => {
+    setTimeout(() => {
+        panelFollowerPickerOpen.value = false;
+    }, 120);
+};
+const onPanelFollowerSearchInput = () => {
+    panelFollowerPickerOpen.value = followerSearch.value.trim().length > 0;
+};
+const onPanelFollowerSearchFocus = () => {
+    panelFollowerPickerOpen.value = followerSearch.value.trim().length > 0;
+};
 
 const sendMessage = async () => {
     if (!messageBody.value.trim() && messageFiles.value.length === 0) {
@@ -388,7 +659,7 @@ const formatSize = (value) => {
         unit += 1;
     }
 
-    return `${size.toFixed(size >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+    return `${size.toFixed(size >= 10 || unit === 0 ?0 : 1)} ${units[unit]}`;
 };
 
 const messageAuthor = (message) => {
@@ -396,31 +667,17 @@ const messageAuthor = (message) => {
     if (message.author_type === 'contact') return message.author_contact?.name || 'Cliente';
     return 'Sistema';
 };
+const messageAuthorAvatarUrl = (message) => {
+    if (message.author_type === 'user') {
+        return String(message.author_user?.avatar_url || '').trim();
+    }
 
-const messageAuthorInitial = (message) => {
-    const name = messageAuthor(message);
-    return name ? name.charAt(0).toUpperCase() : 'S';
+    return '';
 };
 
 const isOwnMessage = (message) => {
     if (message.author_type !== 'user') return false;
     return Number(message.author_user?.id) === Number(auth.state.user?.id);
-};
-
-const stopConversationRefresh = () => {
-    if (conversationRefreshTimer) {
-        clearInterval(conversationRefreshTimer);
-        conversationRefreshTimer = null;
-    }
-};
-
-const startConversationRefresh = () => {
-    stopConversationRefresh();
-    conversationRefreshTimer = setInterval(() => {
-        if (activeTopTab.value !== 'conversation') return;
-        if (sendingMessage.value || loading.value) return;
-        loadTicket();
-    }, 8000);
 };
 
 const logActor = (log) => {
@@ -440,7 +697,7 @@ const activityIconClass = (action) => {
 const activitySymbol = (action) => {
     if (action === 'ticket_created') return '✦';
     if (action === 'status_updated') return '⟳';
-    if (action === 'assignment_updated') return '↻';
+    if (action === 'assignment_updated') return '↔';
     if (action === 'field_updated') return '⌁';
     return '•';
 };
@@ -455,7 +712,7 @@ const formatActivityTime = (value) => {
 };
 
 const activityTitle = (log) => {
-    const label = actionLabels[log.action] ?? log.action;
+    const label = actionLabels[log.action] || log.action;
 
     if (log.field) {
         return `${label} · ${log.field}`;
@@ -467,7 +724,7 @@ const activityTitle = (log) => {
 const activityChange = (log) => {
     if (!log.field) return '';
 
-    return `${log.old_value ?? '-'} -> ${log.new_value ?? '-'}`;
+    return `${log.old_value || '-'} -> ${log.new_value || '-'}`;
 };
 
 const activityGroupLabel = (value) => {
@@ -514,11 +771,14 @@ const activityGroups = computed(() => {
 onMounted(loadTicket);
 onMounted(() => {
     document.addEventListener('click', closeStatusMenuOnOutsideClick);
-    startConversationRefresh();
+    detailsPanelOpen.value = detailsFromQuery(route.query.details);
 });
 onBeforeUnmount(() => {
     document.removeEventListener('click', closeStatusMenuOnOutsideClick);
-    stopConversationRefresh();
+    if (metadataAutoSaveTimer) {
+        clearTimeout(metadataAutoSaveTimer);
+        metadataAutoSaveTimer = null;
+    }
 });
 watch(
     () => route.params.id,
@@ -530,7 +790,13 @@ watch(
 watch(
     () => route.query.tab,
     (tab) => {
-        activeTopTab.value = normalizeTopTab(typeof tab === 'string' ? tab : 'conversation');
+        activeTopTab.value = normalizeTopTab(typeof tab === 'string' ?tab : 'conversation');
+    },
+);
+watch(
+    () => route.query.details,
+    (value) => {
+        detailsPanelOpen.value = detailsFromQuery(value);
     },
 );
 </script>
@@ -586,15 +852,15 @@ watch(
                     class="btn-ghost pin-header-btn"
                     :class="{ 'is-pinned': ticket.is_pinned }"
                     :disabled="pinPending"
-                    :title="ticket.is_pinned ? 'Desafixar ticket' : 'Fixar ticket'"
-                    :aria-label="ticket.is_pinned ? 'Desafixar ticket' : 'Fixar ticket'"
+                    :title="ticket.is_pinned ?'Desafixar ticket' : 'Fixar ticket'"
+                    :aria-label="ticket.is_pinned ?'Desafixar ticket' : 'Fixar ticket'"
                     @click="toggleTicketPin"
                 >
                     <svg class="pin-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <path d="M9 4h6l-1.2 5.2 3.2 2.8v1.2H7v-1.2l3.2-2.8L9 4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
                         <path d="M12 13v7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
                     </svg>
-                    <span>{{ ticket.is_pinned ? 'Desafixar' : 'Fixar' }}</span>
+                    <span>{{ ticket.is_pinned ?'Desafixar' : 'Fixar' }}</span>
                 </button>
 
                 <div v-if="isOperator && canUpdateStatus" class="status-split">
@@ -604,7 +870,7 @@ watch(
                         :disabled="savingStatus || isAlreadyClosed"
                         @click="closeTicketQuick"
                     >
-                        {{ savingStatus ? 'A atualizar...' : 'Submeter como fechado' }}
+                        {{ savingStatus ?'A atualizar...' : 'Submeter como fechado' }}
                     </button>
 
                     <button
@@ -625,7 +891,7 @@ watch(
                             class="status-option"
                             @click="updateStatusTo(status)"
                         >
-                            {{ statusLabels[status] ?? status }}
+                            {{ statusLabels[status] || status }}
                         </button>
                     </div>
                 </div>
@@ -642,7 +908,7 @@ watch(
 
         <p v-if="error" class="error-banner">{{ error }}</p>
 
-        <div class="workspace-grid">
+        <div class="workspace-grid" :class="{ 'with-details': detailsPanelOpen }">
             <article id="conversation-section" class="conversation-card">
                 <div class="conversation-tabs">
                     <button
@@ -678,7 +944,12 @@ watch(
                 <div v-if="activeTopTab === 'conversation'" class="conversation-tab-content">
                     <div class="message-stream">
                         <article class="message-row" :class="{ own: isOwnMessage(message) }" v-for="message in chatMessages" :key="message.id">
-                            <div class="avatar">{{ messageAuthorInitial(message) }}</div>
+                            <UserAvatar
+                                class="avatar"
+                                :name="messageAuthor(message)"
+                                :src="messageAuthorAvatarUrl(message)"
+                                :size="34"
+                            />
 
                             <div class="bubble" :class="{ internal: message.is_internal }">
                                 <div class="bubble-head">
@@ -724,7 +995,7 @@ watch(
                             </label>
 
                             <button class="btn-send" type="submit" :disabled="sendingMessage">
-                                {{ sendingMessage ? 'A enviar...' : 'Enviar' }}
+                                {{ sendingMessage ?'A enviar...' : 'Enviar' }}
                             </button>
                         </div>
 
@@ -775,7 +1046,7 @@ watch(
                             </select>
                         </label>
                         <button class="btn-primary" type="submit" :disabled="savingStatus">
-                            {{ savingStatus ? 'A guardar...' : 'Atualizar estado' }}
+                            {{ savingStatus ?'A guardar...' : 'Atualizar estado' }}
                         </button>
                     </form>
 
@@ -790,7 +1061,7 @@ watch(
                             </select>
                         </label>
                         <button class="btn-primary" type="submit" :disabled="savingAssignment">
-                            {{ savingAssignment ? 'A guardar...' : 'Atualizar atribuicao' }}
+                            {{ savingAssignment ?'A guardar...' : 'Atualizar atribuicao' }}
                         </button>
                     </form>
 
@@ -860,7 +1131,7 @@ watch(
                         </label>
 
                         <button class="btn-primary" type="submit" :disabled="savingMetadata">
-                            {{ savingMetadata ? 'A guardar...' : 'Atualizar metadados' }}
+                            {{ savingMetadata ?'A guardar...' : 'Atualizar metadados' }}
                         </button>
                     </form>
                 </div>
@@ -874,14 +1145,19 @@ watch(
                             rows="3"
                         ></textarea>
                         <button class="btn-send-note" type="submit" :disabled="sendingNote || !noteBody.trim()">
-                            {{ sendingNote ? 'A submeter...' : 'Submeter' }}
+                            {{ sendingNote ?'A submeter...' : 'Submeter' }}
                         </button>
                     </form>
 
                     <p v-else class="notes-muted">Só operadores podem adicionar notas internas.</p>
 
                     <article class="note-row" v-for="message in internalNotes" :key="`note-${message.id}`">
-                        <div class="note-avatar">{{ messageAuthorInitial(message) }}</div>
+                        <UserAvatar
+                            class="note-avatar"
+                            :name="messageAuthor(message)"
+                            :src="messageAuthorAvatarUrl(message)"
+                            :size="34"
+                        />
                         <div class="note-item">
                             <div class="note-head">
                                 <strong>{{ messageAuthor(message) }}</strong>
@@ -893,9 +1169,229 @@ watch(
                 </div>
             </article>
 
+            <Transition name="details-slide">
+                <aside v-if="detailsPanelOpen" class="details-panel" aria-label="Detalhes do ticket">
+                    <header class="details-panel-head">
+                        <h3>Detalhes do ticket</h3>
+                        <button type="button" class="details-close" @click="detailsPanelOpen = false" aria-label="Fechar painel">
+                            ×
+                        </button>
+                    </header>
+
+                    <div class="details-panel-body">
+                        <form
+                            class="stack details-form"
+                            @submit.prevent
+                            v-if="isOperator && (canUpdateStatus || canAssign || canUpdateMetadata)"
+                        >
+                            <label v-if="canUpdateStatus">
+                                Estado
+                                <select v-model="statusForm.status" @change="autoSaveStatusFromPanel">
+                                    <option v-for="(label, key) in statusLabels" :key="`panel-status-${key}`" :value="key">{{ label }}</option>
+                                </select>
+                            </label>
+
+                            <div v-if="canAssign" class="details-assignee-block">
+                                <p class="details-block-title">Operador atribuído</p>
+                                <div class="details-assigned-card">
+                                    <UserAvatar
+                                        class="details-operator-avatar"
+                                        :name="assignedOperatorWithEmail?.name || 'Sem atribuicao'"
+                                        :src="userAvatarUrl(assignedOperatorWithEmail)"
+                                        :size="26"
+                                    />
+                                    <div class="details-assigned-meta">
+                                        <strong>{{ assignedOperatorWithEmail?.name || 'Sem atribuição' }}</strong>
+                                        <small>{{ assignedOperatorWithEmail?.email || 'Sem email' }}</small>
+                                    </div>
+                                </div>
+
+                                <button type="button" class="btn-primary details-transfer-trigger" @click="toggleTransferOperator">
+                                    {{ transferOperatorOpen ?'Cancelar transferência' : 'Transferir para outro operador' }}
+                                </button>
+
+                                <div v-if="transferOperatorOpen" class="details-operator-picker">
+                                    <input
+                                        v-model="panelOperatorSearch"
+                                        type="search"
+                                        placeholder="Escreve nome ou email do operador"
+                                        @focus="onPanelOperatorSearchFocus"
+                                        @input="onPanelOperatorSearchInput"
+                                        @blur="closePanelOperatorPicker"
+                                        @keydown="handlePanelOperatorSearchEnter"
+                                    >
+
+                                    <div v-if="panelOperatorPickerOpen" class="details-operator-suggestions">
+                                        <button
+                                            type="button"
+                                            class="details-operator-option details-operator-option-clear"
+                                            @mousedown.prevent="clearPanelAssignedOperator"
+                                        >
+                                            <span class="details-operator-avatar details-operator-avatar-clear">-</span>
+                                            <span class="details-operator-meta">
+                                                <strong>Sem atribuição</strong>
+                                            </span>
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            v-for="operator in panelOperatorSuggestions"
+                                            :key="`panel-op-${operator.id}`"
+                                            class="details-operator-option"
+                                            @mousedown.prevent="choosePanelOperator(operator.id)"
+                                        >
+                                            <UserAvatar
+                                                class="details-operator-avatar"
+                                                :name="operator.name"
+                                                :src="userAvatarUrl(operator)"
+                                                :size="26"
+                                            />
+                                            <span class="details-operator-meta">
+                                                <strong>{{ operator.name }}</strong>
+                                                <small>{{ operator.email || 'Sem email' }} · Operador</small>
+                                            </span>
+                                        </button>
+
+                                        <p v-if="!panelOperatorSuggestions.length" class="details-operator-empty">Sem resultados.</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <template v-if="canUpdateMetadata">
+                                <label>
+                                    Assunto
+                                    <input
+                                        v-model="metadataForm.subject"
+                                        maxlength="255"
+                                        required
+                                        @input="handleDetailsSubjectInput"
+                                        @blur="flushMetadataAutoSave"
+                                    >
+                                </label>
+
+                                <label>
+                                    Tipo
+                                    <select v-model="metadataForm.type" @change="handleDetailsMetadataChange">
+                                        <option v-for="(label, key) in typeLabels" :key="`panel-type-${key}`" :value="key">{{ label }}</option>
+                                    </select>
+                                </label>
+
+                                <label>
+                                    Prioridade
+                                    <div class="details-priority-picker">
+                                        <button
+                                            type="button"
+                                            v-for="(label, key) in priorityLabels"
+                                            :key="`panel-priority-${key}`"
+                                            class="details-priority-btn"
+                                            :class="{ 'is-selected': metadataForm.priority === key }"
+                                            :aria-pressed="metadataForm.priority === key ?'true' : 'false'"
+                                            @click="handleDetailsPrioritySelect(key)"
+                                        >
+                                            <span class="details-priority-dot" :class="priorityDotClass[key]"></span>
+                                            {{ label }}
+                                        </button>
+                                    </div>
+                                </label>
+
+                                <label>
+                                    Inbox
+                                    <select v-model="metadataForm.inbox_id" @change="handleDetailsMetadataChange">
+                                        <option v-for="inbox in ticket.available_inboxes" :key="`panel-inbox-${inbox.id}`" :value="String(inbox.id)">
+                                            {{ inbox.name }}
+                                        </option>
+                                    </select>
+                                </label>
+
+                                <div class="details-followers-block">
+                                    <p class="details-block-title">Utilizadores em conhecimento</p>
+
+                                    <div v-if="selectedFollowers.length" class="details-followers-tags">
+                                        <span v-for="follower in selectedFollowers" :key="`panel-follow-${follower.id}`" class="follower-tag">
+                                            <UserAvatar
+                                                class="details-operator-avatar"
+                                                :name="follower.name"
+                                                :src="userAvatarUrl(follower)"
+                                                :size="22"
+                                            />
+                                            {{ follower.name }}
+                                            <small>{{ followerRoleLabel(follower.role) }}</small>
+                                            <button type="button" @click="removeFollowerFromPanel(follower.id)">&times;</button>
+                                        </span>
+                                    </div>
+                                    <p v-else class="followers-empty">Sem utilizadores em conhecimento.</p>
+
+                                    <div class="details-followers-picker">
+                                        <input
+                                            v-model="followerSearch"
+                                            type="search"
+                                            placeholder="Adicionar utilizador por nome ou email"
+                                            @focus="onPanelFollowerSearchFocus"
+                                            @input="onPanelFollowerSearchInput"
+                                            @blur="closePanelFollowerPicker"
+                                            @keydown="handlePanelFollowerSearchEnter"
+                                        >
+
+                                        <div v-if="panelFollowerPickerOpen" class="details-follower-suggestions">
+                                            <button
+                                                type="button"
+                                                v-for="follower in panelFollowerSuggestions"
+                                                :key="`panel-follow-suggest-${follower.id}`"
+                                                class="details-operator-option"
+                                                @mousedown.prevent="chooseFollowerFromPanel(follower.id)"
+                                            >
+                                                <UserAvatar
+                                                    class="details-operator-avatar"
+                                                    :name="follower.name"
+                                                    :src="userAvatarUrl(follower)"
+                                                    :size="26"
+                                                />
+                                                <span class="details-operator-meta">
+                                                    <strong>{{ follower.name }}</strong>
+                                                    <small>{{ follower.email || 'Sem email' }} · {{ followerRoleLabel(follower.role) }}</small>
+                                                </span>
+                                            </button>
+
+                                            <p v-if="!panelFollowerSuggestions.length" class="details-operator-empty">Sem resultados.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </form>
+
+                    <div v-if="!isOperator" class="details-readonly">
+                        <p><strong>Estado:</strong> {{ statusLabels[ticket.status] || ticket.status }}</p>
+                        <p><strong>Prioridade:</strong> {{ priorityLabels[ticket.priority] || ticket.priority }}</p>
+                        <p><strong>Tipo:</strong> {{ typeLabels[ticket.type] || ticket.type }}</p>
+                        <p><strong>Inbox:</strong> {{ ticket.inbox?.name || '-' }}</p>
+                        <p><strong>Entidade:</strong> {{ ticket.entity?.name || '-' }}</p>
+                        <p><strong>Operador:</strong> {{ ticket.assigned_operator?.name || 'Sem atribuição' }}</p>
+                    </div>
+
+                        <p
+                            v-if="isOperator && !canUpdateStatus && !canAssign && !canUpdateMetadata"
+                            class="notes-muted"
+                        >
+                            Sem permissões para editar detalhes deste ticket.
+                        </p>
+                    </div>
+                </aside>
+            </Transition>
+
         </div>
 
         <nav class="quick-actions" aria-label="Ações rápidas">
+            <button
+                type="button"
+                :class="{ active: detailsPanelOpen }"
+                title="Detalhes do ticket"
+                @click="toggleDetailsPanel"
+            >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M5 7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2a1.6 1.6 0 0 0 0 3.2V15a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-2.8a1.6 1.6 0 0 0 0-3.2V7Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+                    <path d="M10 9.5h4M10 12h4M10 14.5h2.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+            </button>
             <button
                 type="button"
                 title="Ir para conversa"
@@ -921,20 +1417,10 @@ watch(
                     <rect x="5" y="5" width="10" height="10" rx="2" stroke="currentColor" stroke-width="1.8" />
                 </svg>
             </button>
-            <button
-                v-if="isOperator && canQuickClose"
-                type="button"
-                title="Fechar ticket"
-                @click="closeTicketQuick"
-            >
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M7 12.5l3.2 3.2L17.5 8.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-                    <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8" />
-                </svg>
-            </button>
         </nav>
 
         <p v-if="quickActionMessage" class="quick-message">{{ quickActionMessage }}</p>
+
     </section>
 
     <p v-else-if="loading" class="loading-text">A carregar ticket...</p>
@@ -985,7 +1471,7 @@ watch(
 
 .back-link:hover .back-icon {
     background: #dff7ed;
-    color: #0f766e;
+    color: #1F4E79;
 }
 
 .back-icon svg {
@@ -1016,9 +1502,9 @@ watch(
 }
 
 .ticket-step:hover:not(:disabled) {
-    background: #e8fbf2;
+    background: #e8f0fa;
     border-color: #a6dfc6;
-    color: #0f766e;
+    color: #1F4E79;
 }
 
 .ticket-step:disabled {
@@ -1161,9 +1647,9 @@ watch(
 }
 
 .btn-primary {
-    background: #0f766e;
+    background: #1F4E79;
     color: #fff;
-    border-color: #0f766e;
+    border-color: #1F4E79;
     padding: 0.5rem 0.7rem;
 }
 
@@ -1182,46 +1668,58 @@ watch(
 
 .quick-actions {
     position: fixed;
-    right: 1.7rem;
+    right: 1.25rem;
     top: 50%;
     transform: translateY(-50%);
     display: grid;
-    gap: 0.45rem;
+    gap: 0.35rem;
     z-index: 65;
+    padding: 0.3rem 0.2rem;
+    border-radius: 999px;
+    background: rgba(248, 251, 255, 0.72);
+    border: 1px solid rgba(209, 220, 235, 0.9);
+    backdrop-filter: blur(4px);
 }
 
 .quick-actions button {
-    width: 40px;
-    height: 40px;
+    width: 34px;
+    height: 34px;
     border-radius: 999px;
-    border: 1px solid #d9e2ee;
-    background: #f8fafc;
-    color: #64748b;
+    border: 1px solid #dbe5f1;
+    background: #f8fbff;
+    color: #6b7b90;
     display: grid;
     place-items: center;
     cursor: pointer;
-    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+    transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease, transform 140ms ease;
 }
 
 .quick-actions button:hover {
-    background: #e8fbf2;
-    color: #0f766e;
-    border-color: #9fd9c2;
+    background: #edf3fa;
+    color: #334155;
+    border-color: #c8d5e6;
+    transform: translateX(-1px);
+}
+
+.quick-actions button.active {
+    background: #e9fbf3;
+    color: #1F4E79;
+    border-color: #9bd7c0;
 }
 
 .quick-actions svg {
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
 }
 
 .quick-message {
     position: fixed;
     right: 1.6rem;
-    top: calc(50% + 190px);
+    top: calc(50% + 160px);
     margin: 0;
     z-index: 66;
-    border: 1px solid #9fd9c2;
-    background: #ecfdf5;
+    border: 1px solid #9ab9d8;
+    background: #EDF3FA;
     color: #0d704e;
     border-radius: 8px;
     padding: 0.34rem 0.5rem;
@@ -1232,6 +1730,367 @@ watch(
     display: grid;
     grid-template-columns: 1fr;
     gap: 0.9rem;
+    transition: grid-template-columns 240ms ease;
+}
+
+.workspace-grid.with-details {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+    align-items: start;
+}
+
+.details-panel {
+    border: 1px solid #cfdae8;
+    border-radius: 16px;
+    background: #f7fafc;
+    position: sticky;
+    top: 0.4rem;
+    max-height: calc(100vh - 110px);
+    overflow: auto;
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.08);
+}
+
+.details-slide-enter-active,
+.details-slide-leave-active {
+    transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.details-slide-enter-from,
+.details-slide-leave-to {
+    opacity: 0;
+    transform: translateX(12px);
+}
+
+.details-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.82rem 0.92rem;
+    border-bottom: 1px solid #dbe6f3;
+    background: #f3f7fb;
+}
+
+.details-panel-head h3 {
+    margin: 0;
+    font-size: 1.02rem;
+    color: #0f172a;
+}
+
+.details-close {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    border: 1px solid #cdd9e8;
+    background: #f8fbff;
+    color: #64748b;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.details-close:hover {
+    background: #ffffff;
+    border-color: #b7c6d8;
+    color: #334155;
+}
+
+.details-panel-body {
+    padding: 0.9rem;
+    display: grid;
+    gap: 0.85rem;
+    align-content: start;
+}
+
+.details-form {
+    border: 1px solid #d8e4f2;
+    border-radius: 12px;
+    background: #ffffff;
+    padding: 0.74rem;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8) inset;
+}
+
+.details-form .btn-primary {
+    margin-top: 0.2rem;
+}
+
+.details-form label {
+    display: grid;
+    gap: 0.28rem;
+    color: #334155;
+    font-size: 0.83rem;
+    font-weight: 600;
+}
+
+.details-form input,
+.details-form select {
+    border: 1px solid #cfdae8;
+    border-radius: 9px;
+    padding: 0.47rem 0.58rem;
+    font: inherit;
+    background: #fff;
+    color: #0f172a;
+}
+
+.details-operator-picker {
+    position: relative;
+    border: 1px solid #dbe4ee;
+    border-radius: 10px;
+    padding: 0.5rem;
+    display: grid;
+    gap: 0.4rem;
+    background: #f8fbff;
+}
+
+.details-operator-suggestions {
+    position: absolute;
+    left: 0.5rem;
+    right: 0.5rem;
+    top: calc(100% + 0.3rem);
+    z-index: 40;
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+    max-height: 220px;
+    overflow: auto;
+}
+
+.details-operator-option {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.38rem 0.5rem;
+    border-bottom: 1px solid #eef2f7;
+    text-align: left;
+    cursor: pointer;
+}
+
+.details-operator-option:last-child {
+    border-bottom: 0;
+}
+
+.details-operator-option:hover {
+    background: #f0fdf4;
+}
+
+.details-operator-option-clear {
+    background: #f8fafc;
+}
+
+.details-operator-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.details-operator-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border: 1px solid #b9ccdf;
+    border-radius: 999px;
+    background: #eff6ff;
+    color: #0f172a;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.8rem;
+}
+
+.details-operator-tag button {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    line-height: 1;
+    cursor: pointer;
+    color: #475569;
+}
+
+.details-operator-avatar {
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #0f172a;
+    color: #fff;
+    font-size: 0.66rem;
+    font-weight: 700;
+}
+
+.details-operator-avatar-clear {
+    background: #64748b;
+}
+
+.details-operator-name {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.details-operator-meta {
+    display: grid;
+    gap: 0.12rem;
+}
+
+.details-operator-meta strong {
+    font-size: 0.9rem;
+}
+
+.details-operator-meta small {
+    color: #64748b;
+    font-size: 0.77rem;
+}
+
+.details-operator-empty {
+    margin: 0;
+    padding: 0.6rem;
+    color: #64748b;
+}
+
+.details-priority-picker {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.4rem;
+}
+
+.details-priority-btn {
+    border: 1px solid #d4deea;
+    border-radius: 8px;
+    background: #fff;
+    color: #334155;
+    padding: 0.38rem 0.45rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.33rem;
+    font: inherit;
+    font-size: 0.79rem;
+    cursor: pointer;
+}
+
+.details-priority-btn.is-selected {
+    border-color: #2b5d8d;
+    background: #e9fbf3;
+    color: #1F4E79;
+}
+
+.details-priority-dot {
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 999px;
+}
+
+.details-priority-dot.is-low { background: #3b82f6; }
+.details-priority-dot.is-medium { background: #f59e0b; }
+.details-priority-dot.is-high { background: #ef4444; }
+.details-priority-dot.is-urgent { background: #b91c1c; }
+
+.details-form .stack {
+    gap: 0.5rem;
+}
+
+.details-block-title {
+    margin: 0;
+    color: #334155;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.details-assignee-block {
+    display: grid;
+    gap: 0.38rem;
+}
+
+.details-assigned-card {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    border: 1px solid #d8e4f2;
+    border-radius: 10px;
+    background: #f8fbff;
+    padding: 0.45rem 0.55rem;
+}
+
+.details-assigned-meta {
+    display: grid;
+    min-width: 0;
+}
+
+.details-assigned-meta strong {
+    font-size: 0.88rem;
+    color: #0f172a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.details-assigned-meta small {
+    color: #64748b;
+    font-size: 0.76rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.details-transfer-trigger {
+    width: 100%;
+}
+
+.details-followers-block {
+    display: grid;
+    gap: 0.42rem;
+}
+
+.details-followers-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.details-followers-picker {
+    position: relative;
+    border: 1px solid #dbe4ee;
+    border-radius: 10px;
+    padding: 0.5rem;
+    display: grid;
+    gap: 0.4rem;
+    background: #f8fbff;
+}
+
+.details-follower-suggestions {
+    position: absolute;
+    left: 0.5rem;
+    right: 0.5rem;
+    top: calc(100% + 0.3rem);
+    z-index: 40;
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+    max-height: 220px;
+    overflow: auto;
+}
+
+.follower-tag small {
+    color: #64748b;
+    font-size: 0.74rem;
+}
+
+.details-readonly {
+    border: 1px solid #e6edf6;
+    border-radius: 12px;
+    padding: 0.7rem;
+    display: grid;
+    gap: 0.35rem;
+}
+
+.details-readonly p {
+    margin: 0;
+    color: #334155;
+    font-size: 0.88rem;
 }
 
 .conversation-card {
@@ -1266,8 +2125,8 @@ watch(
 }
 
 .tab.active {
-    color: #0f766e;
-    border-bottom-color: #0f9f73;
+    color: #1F4E79;
+    border-bottom-color: #2b5d8d;
     font-weight: 600;
 }
 
@@ -1354,7 +2213,7 @@ watch(
 .activity-created { border-color: #9ca3af; background: #f3f4f6; color: #4b5563; }
 .activity-status { border-color: #ef4444; background: #fee2e2; color: #b91c1c; }
 .activity-assignment { border-color: #0ea5e9; background: #e0f2fe; color: #0369a1; }
-.activity-meta { border-color: #14b8a6; background: #ccfbf1; color: #0f766e; }
+.activity-meta { border-color: #7ea2c7; background: #eaf2fb; color: #1F4E79; }
 .activity-default { border-color: #94a3b8; background: #f1f5f9; color: #475569; }
 
 .activity-body {
@@ -1521,13 +2380,13 @@ watch(
 
 .message-row.own .avatar {
     order: 2;
-    background: #0f766e;
+    background: #1F4E79;
 }
 
 .message-row.own .bubble {
     order: 1;
-    background: #ecfdf5;
-    border-color: #9fd9c2;
+    background: #EDF3FA;
+    border-color: #9ab9d8;
 }
 
 .avatar {
@@ -1592,7 +2451,7 @@ watch(
 }
 
 .attachment-list a {
-    color: #0f766e;
+    color: #1F4E79;
     text-decoration: none;
 }
 
@@ -1748,6 +2607,15 @@ watch(
 }
 
 @media (max-width: 1200px) {
+    .workspace-grid.with-details {
+        grid-template-columns: 1fr;
+    }
+
+    .details-panel {
+        position: static;
+        max-height: none;
+    }
+
     .message-stream {
         max-height: none;
     }
@@ -1815,5 +2683,6 @@ watch(
         position: static;
         width: fit-content;
     }
+
 }
 </style>

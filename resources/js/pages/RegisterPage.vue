@@ -120,8 +120,8 @@ input {
 }
 
 button {
-    border: 1px solid #0f766e;
-    background: #0f766e;
+    border: 1px solid #1F4E79;
+    background: #1F4E79;
     color: #fff;
     border-radius: 8px;
     padding: 0.55rem 0.7rem;
@@ -139,7 +139,7 @@ button[disabled] {
 }
 
 .alt-link a {
-    color: #0f766e;
+    color: #1F4E79;
     text-decoration: none;
     font-weight: 600;
 }

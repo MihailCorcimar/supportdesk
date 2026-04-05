@@ -3,7 +3,9 @@
 namespace App\Services;
 
 use App\Mail\TicketEventMail;
+use App\Models\InboxNotificationTemplate;
 use App\Models\NotificationTemplate;
+use App\Models\SupportdeskSetting;
 use App\Models\Ticket;
 use App\Models\TicketMessage;
 use App\Models\User;
@@ -19,6 +21,11 @@ class TicketNotificationService
      * @var array<string, array{subject_template:string,title_template:string,body_template:string,is_enabled:bool}>
      */
     private array $templateCache = [];
+
+    /**
+     * @var array<string, mixed>|null
+     */
+    private ?array $emailStyleCache = null;
 
     /**
      * Send notification after a ticket is created.
@@ -38,7 +45,7 @@ class TicketNotificationService
         $this->createInAppNotifications(
             $ticket,
             'ticket_created',
-            "New ticket {$ticket->ticket_number}",
+            "Novo ticket {$ticket->ticket_number}",
             $ticket->subject
         );
     }
@@ -59,8 +66,8 @@ class TicketNotificationService
 
         $preview = mb_substr(trim((string) $message->body), 0, 240);
         $authorName = $message->author_type === 'user'
-            ? ($message->authorUser?->name ?? 'Operator')
-            : ($message->authorContact?->name ?? 'Client');
+            ? ($message->authorUser?->name ?? 'Operador')
+            : ($message->authorContact?->name ?? 'Cliente');
 
         $this->sendToRecipients(
             $ticket,
@@ -68,7 +75,7 @@ class TicketNotificationService
             [
                 'event_key' => 'ticket_replied',
                 'author_name' => $authorName,
-                'message_preview' => $preview !== '' ? $preview : 'Reply with attachments only.',
+                'message_preview' => $preview !== '' ? $preview : 'Resposta com anexos sem texto.',
             ]
         );
 
@@ -79,8 +86,8 @@ class TicketNotificationService
         $this->createInAppNotifications(
             $ticket,
             'ticket_replied',
-            "New reply on {$ticket->ticket_number}",
-            $preview !== '' ? $preview : 'Reply with attachments only.',
+            "Nova resposta no {$ticket->ticket_number}",
+            $preview !== '' ? $preview : 'Resposta com anexos sem texto.',
             $actorUserId,
             [
                 'author_name' => $authorName,
@@ -103,13 +110,17 @@ class TicketNotificationService
             ]
         );
 
-        $assignedName = $ticket->assignedOperator?->name ?? 'Unassigned';
+        $assignedName = $ticket->assignedOperator?->name ?? 'Sem atribuiÃ§Ã£o';
 
         $this->createInAppNotifications(
             $ticket,
             'ticket_assignment_updated',
-            "Assignment updated on {$ticket->ticket_number}",
-            "Assigned operator: {$assignedName}"
+            "AtribuiÃ§Ã£o atualizada em {$ticket->ticket_number}",
+            "Operador atribuÃ­do: {$assignedName}",
+            null,
+            [
+                'assigned_operator' => $assignedName,
+            ]
         );
     }
 
@@ -131,8 +142,35 @@ class TicketNotificationService
         $this->createInAppNotifications(
             $ticket,
             'ticket_status_updated',
-            "Status updated on {$ticket->ticket_number}",
-            "Current status: {$ticket->status}"
+            "Estado atualizado em {$ticket->ticket_number}",
+            "Estado atual: {$this->statusLabel($ticket->status)}",
+            null,
+            [
+                'status_label' => $this->statusLabel($ticket->status),
+            ]
+        );
+    }
+
+    /**
+     * Send notification after knowledge/followers update.
+     */
+    public function notifyKnowledgeUpdated(Ticket $ticket): void
+    {
+        $recipients = $this->collectRecipients($ticket);
+
+        $this->sendToRecipients(
+            $ticket,
+            $recipients,
+            [
+                'event_key' => 'ticket_knowledge_updated',
+            ]
+        );
+
+        $this->createInAppNotifications(
+            $ticket,
+            'ticket_knowledge_updated',
+            "Conhecimento atualizado em {$ticket->ticket_number}",
+            'Utilizadores em conhecimento foram atualizados.'
         );
     }
 
@@ -143,8 +181,14 @@ class TicketNotificationService
      */
     private function collectRecipients(Ticket $ticket): array
     {
-        $ticket->loadMissing(['creatorUser', 'contact', 'assignedOperator', 'followers']);
+        $ticket->loadMissing(['creatorUser', 'contact', 'assignedOperator', 'followers', 'inbox.operators']);
         $followerEmails = $ticket->followers
+            ->pluck('email')
+            ->filter(fn (mixed $email) => is_string($email) && trim($email) !== '')
+            ->values()
+            ->all();
+        $inboxOperatorEmails = ($ticket->inbox?->operators ?? collect())
+            ->where('is_active', true)
             ->pluck('email')
             ->filter(fn (mixed $email) => is_string($email) && trim($email) !== '')
             ->values()
@@ -156,6 +200,7 @@ class TicketNotificationService
             $ticket->assignedOperator?->email,
             ...($ticket->cc_emails ?? []),
             ...$followerEmails,
+            ...$inboxOperatorEmails,
         ])
             ->filter()
             ->map(fn (string $email) => trim($email))
@@ -172,7 +217,7 @@ class TicketNotificationService
      */
     private function collectRecipientUsers(Ticket $ticket): Collection
     {
-        $ticket->loadMissing(['creatorUser', 'contact.user', 'assignedOperator', 'followers']);
+        $ticket->loadMissing(['creatorUser', 'contact.user', 'assignedOperator', 'followers', 'inbox.operators']);
 
         $ccEmails = collect($ticket->cc_emails ?? [])
             ->filter(fn (mixed $email) => is_string($email) && trim($email) !== '')
@@ -193,6 +238,7 @@ class TicketNotificationService
             $ticket->assignedOperator,
         ])
             ->merge($ticket->followers)
+            ->merge(($ticket->inbox?->operators ?? collect()))
             ->merge($usersByCc)
             ->filter(fn (mixed $user) => $user instanceof User && $user->is_active)
             ->unique(fn (User $user) => $user->id)
@@ -260,7 +306,7 @@ class TicketNotificationService
             return;
         }
 
-        $template = $this->resolveTemplate($eventKey);
+        $template = $this->resolveTemplate($eventKey, (int) $ticket->inbox_id);
         if (! $template['is_enabled']) {
             return;
         }
@@ -273,7 +319,9 @@ class TicketNotificationService
 
         foreach ($recipients as $recipient) {
             try {
-                Mail::to($recipient)->send(new TicketEventMail($ticket, $subjectLine, $title, $lines));
+                Mail::to($recipient)->send(
+                    new TicketEventMail($ticket, $subjectLine, $title, $lines, $this->resolveEmailStyle())
+                );
             } catch (\Throwable $exception) {
                 Log::warning('Supportdesk notification failed', [
                     'ticket_id' => $ticket->id,
@@ -290,15 +338,26 @@ class TicketNotificationService
      *
      * @return array{subject_template:string,title_template:string,body_template:string,is_enabled:bool}
      */
-    private function resolveTemplate(string $eventKey): array
+    private function resolveTemplate(string $eventKey, ?int $inboxId = null): array
     {
-        if (isset($this->templateCache[$eventKey])) {
-            return $this->templateCache[$eventKey];
+        $cacheKey = "{$eventKey}:".($inboxId ?: 'global');
+        if (isset($this->templateCache[$cacheKey])) {
+            return $this->templateCache[$cacheKey];
         }
 
-        $template = NotificationTemplate::query()
-            ->where('event_key', $eventKey)
-            ->first();
+        $template = null;
+        if ($inboxId) {
+            $template = InboxNotificationTemplate::query()
+                ->where('inbox_id', $inboxId)
+                ->where('event_key', $eventKey)
+                ->first();
+        }
+
+        if (! $template) {
+            $template = NotificationTemplate::query()
+                ->where('event_key', $eventKey)
+                ->first();
+        }
 
         $subjectDefault = (string) config("supportdesk.email.subjects.{$eventKey}", '[Supportdesk] Ticket {ticket_number}');
         $titleDefault = (string) config("supportdesk.email.templates.{$eventKey}.title", 'Ticket updated');
@@ -311,9 +370,72 @@ class TicketNotificationService
             'is_enabled' => $template?->is_enabled ?? true,
         ];
 
-        $this->templateCache[$eventKey] = $resolved;
+        $this->templateCache[$cacheKey] = $resolved;
 
         return $resolved;
+    }
+
+    /**
+     * Resolve email style from database with config fallback.
+     *
+     * @return array{brand_name:string,header_background:string,accent_color:string,button_text:string,footer_text:string,show_ticket_link:bool}
+     */
+    private function resolveEmailStyle(): array
+    {
+        if (is_array($this->emailStyleCache)) {
+            return $this->emailStyleCache;
+        }
+
+        $defaults = [
+            'brand_name' => (string) config('supportdesk.email.style.brand_name', config('app.name', 'Supportdesk')),
+            'header_background' => (string) config('supportdesk.email.style.header_background', '#0f766e'),
+            'accent_color' => (string) config('supportdesk.email.style.accent_color', '#0f766e'),
+            'button_text' => (string) config('supportdesk.email.style.button_text', 'Aceder ao ticket'),
+            'footer_text' => (string) config('supportdesk.email.style.footer_text', 'Mensagem automatica enviada pelo Supportdesk.'),
+            'show_ticket_link' => (bool) config('supportdesk.email.style.show_ticket_link', true),
+        ];
+
+        $record = SupportdeskSetting::query()->where('key', 'email_style')->first();
+        $stored = is_array($record?->value) ? $record->value : [];
+
+        $resolved = [
+            'brand_name' => trim((string) ($stored['brand_name'] ?? $defaults['brand_name'])) ?: $defaults['brand_name'],
+            'header_background' => $this->normalizeHexColor((string) ($stored['header_background'] ?? $defaults['header_background']), $defaults['header_background']),
+            'accent_color' => $this->normalizeHexColor((string) ($stored['accent_color'] ?? $defaults['accent_color']), $defaults['accent_color']),
+            'button_text' => trim((string) ($stored['button_text'] ?? $defaults['button_text'])) ?: $defaults['button_text'],
+            'footer_text' => trim((string) ($stored['footer_text'] ?? $defaults['footer_text'])) ?: $defaults['footer_text'],
+            'show_ticket_link' => array_key_exists('show_ticket_link', $stored)
+                ? (bool) $stored['show_ticket_link']
+                : (bool) $defaults['show_ticket_link'],
+        ];
+
+        $this->emailStyleCache = $resolved;
+
+        return $resolved;
+    }
+
+    private function normalizeHexColor(string $value, string $fallback): string
+    {
+        $trimmed = trim($value);
+        if (preg_match('/^#[A-Fa-f0-9]{6}$/', $trimmed) === 1) {
+            return strtoupper($trimmed);
+        }
+
+        return strtoupper($fallback);
+    }
+    /**
+     * Convert status key to PT-PT label.
+     */
+    private function statusLabel(string $status): string
+    {
+        return match (strtolower(trim($status))) {
+            'open' => 'aberto',
+            'in_progress' => 'em tratamento',
+            'pending' => 'aguardando cliente',
+            'closed' => 'fechado',
+            'cancelled' => 'cancelado',
+            default => strtolower(trim($status)),
+        };
     }
 
     /**
@@ -329,9 +451,9 @@ class TicketNotificationService
         $creatorName = $ticket->creatorUser?->name
             ?? $ticket->creatorContact?->name
             ?? $ticket->contact?->name
-            ?? 'Unknown';
+            ?? 'Desconhecido';
 
-        $assignedOperator = $ticket->assignedOperator?->name ?? 'Unassigned';
+        $assignedOperator = $ticket->assignedOperator?->name ?? 'Sem atribuiÃ§Ã£o';
         $contactName = $ticket->contact?->name ?? '-';
         $entityName = $ticket->entity?->name ?? '-';
         $inboxName = $ticket->inbox?->name ?? '-';
@@ -389,7 +511,7 @@ class TicketNotificationService
             ->all();
 
         if ($lines === []) {
-            return ["Ticket {$ticket->ticket_number} updated."];
+            return ["Ticket {$ticket->ticket_number} atualizado."];
         }
 
         return $lines;

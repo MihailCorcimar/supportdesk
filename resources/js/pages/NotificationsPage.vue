@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import api from '../api/client';
@@ -20,6 +20,15 @@ const eventLabels = {
     ticket_replied: 'Nova resposta',
     ticket_assignment_updated: 'Atribuição alterada',
     ticket_status_updated: 'Estado atualizado',
+    ticket_knowledge_updated: 'Conhecimento atualizado',
+};
+
+const statusLabels = {
+    open: 'Aberto',
+    in_progress: 'Em tratamento',
+    pending: 'Aguardando cliente',
+    closed: 'Fechado',
+    cancelled: 'Cancelado',
 };
 
 const hasMore = computed(() => page.value < lastPage.value);
@@ -45,6 +54,46 @@ const formatDateTime = (value) => {
 };
 
 const mapEventLabel = (eventKey) => eventLabels[eventKey] || 'Notificação';
+const mapStatusLabel = (status) => statusLabels[String(status || '')] || String(status || '-');
+
+const mapNotificationMessage = (notification) => {
+    const payload = notification?.payload || {};
+    const message = String(notification?.message || notification?.title || '').trim();
+
+    if (notification?.event_key === 'ticket_status_updated') {
+        const status = payload.status_label || payload.status;
+        if (status) {
+            return `Estado atual: ${mapStatusLabel(status)}`;
+        }
+
+        const legacyStatus = message.replace(/^Current status:\s*/i, '').trim();
+        if (legacyStatus !== '' && legacyStatus !== message) {
+            return `Estado atual: ${mapStatusLabel(legacyStatus)}`;
+        }
+    }
+
+    if (notification?.event_key === 'ticket_assignment_updated') {
+        const assigned = payload.assigned_operator || '';
+        if (assigned) {
+            return `Operador atribuído: ${assigned}`;
+        }
+
+        const legacyAssigned = message.replace(/^Assigned operator:\s*/i, '').trim();
+        if (legacyAssigned !== '' && legacyAssigned !== message) {
+            return `Operador atribuído: ${legacyAssigned}`;
+        }
+    }
+
+    if (notification?.event_key === 'ticket_knowledge_updated') {
+        return 'Utilizadores em conhecimento foram atualizados.';
+    }
+
+    if (message === 'Knowledge recipients were updated.') {
+        return 'Utilizadores em conhecimento foram atualizados.';
+    }
+
+    return message;
+};
 
 const fetchNotifications = async ({ reset = false } = {}) => {
     if (reset) {
@@ -192,7 +241,7 @@ onMounted(async () => {
                                 {{ notification.ticket.ticket_number }}
                             </span>
                         </p>
-                        <p class="notification-message">{{ notification.message || notification.title }}</p>
+                        <p class="notification-message">{{ mapNotificationMessage(notification) }}</p>
                         <p class="notification-meta">{{ formatDateTime(notification.created_at) }}</p>
                     </div>
                 </button>

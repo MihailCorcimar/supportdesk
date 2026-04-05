@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class AuthApiController extends Controller
@@ -28,6 +29,108 @@ class AuthApiController extends Controller
         return response()->json([
             'data' => $this->serializeUser($user),
         ]);
+    }
+
+    /**
+     * Update the authenticated user profile.
+     */
+    public function updateMe(Request $request): JsonResponse
+    {
+        /** @var User $user */
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'name' => ['sometimes', 'required', 'string', 'max:255'],
+            'email' => [
+                'sometimes',
+                'required',
+                'email',
+                'max:255',
+                Rule::unique('users', 'email')->ignore($user->id),
+            ],
+            'current_password' => ['nullable', 'string', 'required_with:password'],
+            'password' => ['nullable', 'string', 'min:8', 'confirmed'],
+            'password_confirmation' => ['nullable', 'string', 'min:8', 'required_with:password'],
+        ]);
+
+        $updates = [];
+
+        if (array_key_exists('name', $validated)) {
+            $name = trim((string) $validated['name']);
+            if ($name !== '' && $name !== $user->name) {
+                $updates['name'] = $name;
+            }
+        }
+
+        if (array_key_exists('email', $validated)) {
+            $email = mb_strtolower(trim((string) $validated['email']));
+            if ($email !== '' && $email !== $user->email) {
+                $updates['email'] = $email;
+            }
+        }
+
+        $newPassword = (string) ($validated['password'] ?? '');
+        if ($newPassword !== '') {
+            if (! Hash::check((string) ($validated['current_password'] ?? ''), $user->password)) {
+                throw ValidationException::withMessages([
+                    'current_password' => 'Current password is invalid.',
+                ]);
+            }
+
+            $updates['password'] = Hash::make($newPassword);
+        }
+
+        if ($updates === []) {
+            return response()->json([
+                'message' => 'No profile changes to apply.',
+                'data' => $this->serializeUser($user),
+            ]);
+        }
+
+        DB::transaction(function () use ($user, $updates): void {
+            $user->forceFill($updates)->save();
+
+            $contactUpdates = [];
+            if (array_key_exists('name', $updates)) {
+                $contactUpdates['name'] = $updates['name'];
+            }
+            if (array_key_exists('email', $updates)) {
+                $contactUpdates['email'] = $updates['email'];
+            }
+
+            if ($contactUpdates !== []) {
+                Contact::query()
+                    ->where('user_id', $user->id)
+                    ->update($contactUpdates);
+            }
+        });
+
+        $user->refresh();
+
+        return response()->json([
+            'message' => 'Profile updated successfully.',
+            'data' => $this->serializeUser($user),
+        ]);
+    }
+
+    /**
+     * Update the authenticated user avatar.
+     */
+    public function updateAvatar(Request $request): JsonResponse
+    {
+        return response()->json([
+            'message' => 'Custom avatars are disabled. Generic avatar is used for all users.',
+        ], 422);
+    }
+
+    /**
+     * Remove the authenticated user avatar.
+     */
+    public function removeAvatar(Request $request): JsonResponse
+    {
+        return response()->json([
+            'message' => 'Custom avatars are disabled. Generic avatar is used for all users.',
+        ], 422);
     }
 
     /**
@@ -204,6 +307,7 @@ class AuthApiController extends Controller
             'is_active' => (bool) $user->is_active,
             'is_admin' => (bool) $user->is_admin,
             'can_manage_users' => $user->canManageUsers(),
+            'avatar_url' => url('/images/avatar-placeholder.svg'),
         ];
     }
 

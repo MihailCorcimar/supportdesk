@@ -26,6 +26,9 @@ Route::prefix('app-api')->group(function (): void {
 
     Route::middleware('auth')->group(function (): void {
         Route::get('/me', [AuthApiController::class, 'me']);
+        Route::patch('/me', [AuthApiController::class, 'updateMe']);
+        Route::post('/me/avatar', [AuthApiController::class, 'updateAvatar']);
+        Route::delete('/me/avatar', [AuthApiController::class, 'removeAvatar']);
         Route::post('/logout', [AuthApiController::class, 'logout']);
 
         Route::get('/meta', [TicketApiController::class, 'meta']);
@@ -39,6 +42,7 @@ Route::prefix('app-api')->group(function (): void {
         Route::get('/dashboard/summary', [DashboardApiController::class, 'summary']);
         Route::get('/tickets', [TicketApiController::class, 'index']);
         Route::post('/tickets', [TicketApiController::class, 'store']);
+        Route::patch('/tickets/bulk', [TicketApiController::class, 'bulkUpdate'])->middleware('operator');
         Route::get('/tickets/{ticket}', [TicketApiController::class, 'show']);
         Route::patch('/tickets/{ticket}', [TicketApiController::class, 'update'])->middleware('operator');
         Route::patch('/tickets/{ticket}/metadata', [TicketApiController::class, 'updateMetadata'])->middleware('operator');
@@ -70,6 +74,7 @@ Route::prefix('app-api')->group(function (): void {
             Route::get('/ticket-logs/{ticketLog}', [TicketLogApiController::class, 'show']);
             Route::get('/notification-templates', [NotificationTemplateApiController::class, 'index']);
             Route::patch('/notification-templates/{eventKey}', [NotificationTemplateApiController::class, 'update']);
+            Route::patch('/notification-email-style', [NotificationTemplateApiController::class, 'updateStyle']);
 
             Route::get('/users/meta', [UserManagementApiController::class, 'meta']);
             Route::get('/users', [UserManagementApiController::class, 'index']);
@@ -85,5 +90,6 @@ Route::prefix('app-api')->group(function (): void {
 
 Route::view('/{any?}', 'spa')
     ->where('any', '^(?!app-api|up).*$');
+
 
 

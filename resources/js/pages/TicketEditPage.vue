@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import api from '../api/client';
@@ -300,8 +300,8 @@ input, select, textarea, button {
 }
 textarea { min-height: 130px; resize: vertical; }
 button {
-    border-color: #0f766e;
-    background: #0f766e;
+    border-color: #1F4E79;
+    background: #1F4E79;
     color: #fff;
     cursor: pointer;
 }
@@ -407,3 +407,4 @@ button {
     .grid { grid-template-columns: 1fr; }
 }
 </style>
+

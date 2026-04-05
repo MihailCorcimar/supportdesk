@@ -17,12 +17,14 @@ class TicketEventMail extends Mailable
      * Create a new message instance.
      *
      * @param  list<string>  $lines
+     * @param  array<string, mixed>  $style
      */
     public function __construct(
         public Ticket $ticket,
         public string $subjectLine,
         public string $title,
-        public array $lines
+        public array $lines,
+        public array $style = []
     ) {
     }
 

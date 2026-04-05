@@ -128,8 +128,8 @@ input {
 }
 
 button {
-    border: 1px solid #0f766e;
-    background: #0f766e;
+    border: 1px solid #1F4E79;
+    background: #1F4E79;
     color: #fff;
     border-radius: 8px;
     padding: 0.5rem 0.65rem;

@@ -68,16 +68,22 @@ class UserManagementApiController extends Controller
             ->withCount(['createdTickets as tickets_count'])
             ->with(['accessibleInboxes:id,name', 'contacts.entities:id,name']);
 
-        $query->where(function (Builder $inner) use ($manageableInboxIds): void {
-            $inner->where('role', 'client')
-                ->orWhere(function (Builder $operators) use ($manageableInboxIds): void {
+        if (! $actor->isAdmin()) {
+            $query->where(function (Builder $inner) use ($manageableInboxIds): void {
+                $inner->where(function (Builder $operators) use ($manageableInboxIds): void {
                     $operators->where('role', 'operator')
+                        ->where('is_admin', false)
+                        ->whereHas('accessibleInboxes', fn (Builder $inboxes) => $inboxes->whereIn('inboxes.id', $manageableInboxIds))
+                        ->whereDoesntHave('accessibleInboxes', fn (Builder $inboxes) => $inboxes->whereNotIn('inboxes.id', $manageableInboxIds));
+                })->orWhere(function (Builder $clients) use ($manageableInboxIds): void {
+                    $clients->where('role', 'client')
                         ->where(function (Builder $scope) use ($manageableInboxIds): void {
-                            $scope->whereDoesntHave('accessibleInboxes')
-                                ->orWhereHas('accessibleInboxes', fn (Builder $inboxes) => $inboxes->whereIn('inboxes.id', $manageableInboxIds));
+                            $scope->whereHas('createdTickets', fn (Builder $tickets) => $tickets->whereIn('inbox_id', $manageableInboxIds))
+                                ->orWhereHas('contacts.entities.tickets', fn (Builder $tickets) => $tickets->whereIn('inbox_id', $manageableInboxIds));
                         });
                 });
-        });
+            });
+        }
 
         if ($request->filled('role')) {
             $query->where('role', (string) $request->string('role'));
@@ -439,6 +445,7 @@ class UserManagementApiController extends Controller
             'id' => $user->id,
             'name' => $user->name,
             'email' => $user->email,
+            'avatar_url' => url('/images/avatar-placeholder.svg'),
             'role' => $user->role,
             'is_active' => (bool) $user->is_active,
             'is_admin' => (bool) $user->is_admin,
@@ -607,25 +614,55 @@ class UserManagementApiController extends Controller
      */
     private function assertCanManageTargetUser(User $actor, User $target): void
     {
-        if (! $target->isOperator()) {
-            return;
-        }
-
-        if ($target->isAdmin() && ! $actor->isAdmin()) {
-            abort(403, 'You cannot manage an admin operator.');
-        }
-
         if ($actor->isAdmin()) {
             return;
         }
 
         $allowedInboxIds = $actor->manageableInboxes()->pluck('inboxes.id')->all();
-        $targetInboxIds = $target->accessibleInboxes()->pluck('inboxes.id')->all();
 
-        foreach ($targetInboxIds as $inboxId) {
-            if (! in_array((int) $inboxId, $allowedInboxIds, true)) {
+        if ($target->isOperator()) {
+            $targetInboxIds = $target->accessibleInboxes()->pluck('inboxes.id')->all();
+
+            if ($target->isAdmin()) {
+                abort(403, 'You cannot manage an admin operator.');
+            }
+
+            if ($targetInboxIds === []) {
                 abort(403, 'You cannot manage this operator.');
             }
+
+            foreach ($targetInboxIds as $inboxId) {
+                if (! in_array((int) $inboxId, $allowedInboxIds, true)) {
+                    abort(403, 'You cannot manage this operator.');
+                }
+            }
+
+            return;
         }
+
+        if ($target->isClient() && ! $this->isClientInsideInboxScope($target, $allowedInboxIds)) {
+            abort(403, 'You cannot manage this client.');
+        }
+    }
+
+    /**
+     * Check whether a client belongs to at least one manageable inbox scope.
+     *
+     * @param  list<int>  $allowedInboxIds
+     */
+    private function isClientInsideInboxScope(User $client, array $allowedInboxIds): bool
+    {
+        if ($allowedInboxIds === []) {
+            return false;
+        }
+
+        if ($client->createdTickets()->whereIn('inbox_id', $allowedInboxIds)->exists()) {
+            return true;
+        }
+
+        return Contact::query()
+            ->where('user_id', $client->id)
+            ->whereHas('entities.tickets', fn (Builder $tickets) => $tickets->whereIn('inbox_id', $allowedInboxIds))
+            ->exists();
     }
 }

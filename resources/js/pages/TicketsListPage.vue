@@ -1,5 +1,5 @@
-﻿<script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+<script setup>
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import api from '../api/client';
 import { useAuthStore } from '../stores/auth';
@@ -9,13 +9,19 @@ const router = useRouter();
 const auth = useAuthStore();
 const loading = ref(false);
 const error = ref('');
-const quickActionMessage = ref('');
+const success = ref('');
 const searchInputRef = ref(null);
+const selectAllCheckboxRef = ref(null);
 const tickets = ref([]);
 const meta = ref({ current_page: 1, last_page: 1, total: 0 });
 const openActionsMenuTicketId = ref(null);
+const openActionsMenuPlacement = ref('down');
 const showFiltersMenu = ref(false);
 const pinPendingIds = ref([]);
+const selectedTicketIds = ref([]);
+const bulkStatus = ref('');
+const bulkAssignedOperatorId = ref('');
+const bulkLoading = ref(false);
 const options = ref({
     inboxes: [],
     entities: [],
@@ -25,6 +31,16 @@ const options = ref({
     types: [],
 });
 const canManageUsers = computed(() => Boolean(auth.state.user?.can_manage_users));
+const selectedCount = computed(() => selectedTicketIds.value.length);
+const pageTicketIds = computed(() => tickets.value.map((ticket) => ticket.id));
+const areAllPageTicketsSelected = computed(() => (
+    pageTicketIds.value.length > 0
+    && pageTicketIds.value.every((ticketId) => selectedTicketIds.value.includes(ticketId))
+));
+const areSomePageTicketsSelected = computed(() => (
+    !areAllPageTicketsSelected.value
+    && pageTicketIds.value.some((ticketId) => selectedTicketIds.value.includes(ticketId))
+));
 
 const defaultFilters = {
     search: '',
@@ -40,9 +56,10 @@ const defaultFilters = {
 };
 
 const filters = reactive({ ...defaultFilters });
+const actionsMenuRefs = new Map();
 const activeFilterCount = computed(() => {
     const keys = ['type', 'inbox_id', 'created_by_user_id', 'status', 'priority', 'entity_id', 'assigned_operator_id'];
-    return keys.reduce((count, key) => (filters[key] ? count + 1 : count), 0);
+    return keys.reduce((count, key) => (filters[key] ?count + 1 : count), 0);
 });
 const sortByOptions = [
     { value: 'last_activity_at', label: 'Última atividade' },
@@ -91,8 +108,8 @@ const loadMeta = async () => {
 };
 
 const hydrateFiltersFromQuery = () => {
-    const inboxId = typeof route.query.inbox_id === 'string' ? route.query.inbox_id.trim() : '';
-    const createdByUserId = typeof route.query.created_by_user_id === 'string' ? route.query.created_by_user_id.trim() : '';
+    const inboxId = typeof route.query.inbox_id === 'string' ?route.query.inbox_id.trim() : '';
+    const createdByUserId = typeof route.query.created_by_user_id === 'string' ?route.query.created_by_user_id.trim() : '';
     filters.inbox_id = inboxId;
     filters.created_by_user_id = createdByUserId;
 };
@@ -112,6 +129,7 @@ const loadTickets = async (page = 1) => {
         const response = await api.get('/tickets', { params });
         tickets.value = response.data.data;
         meta.value = response.data.meta;
+        selectedTicketIds.value = [];
     } catch (exception) {
         error.value = 'Não foi possível carregar tickets.';
     } finally {
@@ -122,6 +140,7 @@ const loadTickets = async (page = 1) => {
 let searchDebounceTimer = null;
 
 const applyFilters = () => {
+    success.value = '';
     loadTickets(1);
 };
 
@@ -139,6 +158,7 @@ const clearFilters = () => {
     Object.assign(filters, defaultFilters);
     openActionsMenuTicketId.value = null;
     showFiltersMenu.value = false;
+    success.value = '';
     loadTickets(1);
 };
 
@@ -151,11 +171,12 @@ const closeFiltersMenu = () => {
 };
 
 const toggleSort = (field) => {
+    success.value = '';
     if (filters.sort_by === field) {
-        filters.sort_dir = filters.sort_dir === 'asc' ? 'desc' : 'asc';
+        filters.sort_dir = filters.sort_dir === 'asc' ?'desc' : 'asc';
     } else {
         filters.sort_by = field;
-        filters.sort_dir = field === 'ticket_number' ? 'asc' : 'desc';
+        filters.sort_dir = field === 'ticket_number' ?'asc' : 'desc';
     }
 
     loadTickets(1);
@@ -163,7 +184,7 @@ const toggleSort = (field) => {
 
 const sortState = (field) => {
     if (filters.sort_by !== field) return 'none';
-    return filters.sort_dir === 'asc' ? 'asc' : 'desc';
+    return filters.sort_dir === 'asc' ?'asc' : 'desc';
 };
 
 const focusSearch = () => {
@@ -196,20 +217,145 @@ const handleGlobalKeydown = (event) => {
     focusSearch();
 };
 
-const refreshCurrentPage = () => {
-    openActionsMenuTicketId.value = null;
-    loadTickets(meta.value.current_page || 1);
+const setActionsMenuRef = (ticketId, element) => {
+    if (element instanceof HTMLElement) {
+        actionsMenuRefs.set(ticketId, element);
+        return;
+    }
+
+    actionsMenuRefs.delete(ticketId);
 };
 
-const toggleActionsMenu = (ticketId) => {
-    openActionsMenuTicketId.value = openActionsMenuTicketId.value === ticketId ? null : ticketId;
+const updateActionsMenuPlacement = async (ticketId) => {
+    const menuRoot = actionsMenuRefs.get(ticketId);
+    if (!(menuRoot instanceof HTMLElement)) {
+        openActionsMenuPlacement.value = 'down';
+        return;
+    }
+
+    const tableWrap = menuRoot.closest('.table-wrap');
+    const trigger = menuRoot.querySelector('.menu-trigger');
+    const dropdown = menuRoot.querySelector('.actions-dropdown');
+    if (!(tableWrap instanceof HTMLElement) || !(trigger instanceof HTMLElement) || !(dropdown instanceof HTMLElement)) {
+        openActionsMenuPlacement.value = 'down';
+        return;
+    }
+
+    const wrapRect = tableWrap.getBoundingClientRect();
+    const triggerRect = trigger.getBoundingClientRect();
+    const dropdownRect = dropdown.getBoundingClientRect();
+    const spaceBelow = wrapRect.bottom - triggerRect.bottom;
+    const spaceAbove = triggerRect.top - wrapRect.top;
+
+    openActionsMenuPlacement.value = dropdownRect.height > spaceBelow && spaceAbove > spaceBelow ?'up' : 'down';
+};
+
+const toggleActionsMenu = async (ticketId) => {
+    if (openActionsMenuTicketId.value === ticketId) {
+        closeActionsMenu();
+        return;
+    }
+
+    openActionsMenuTicketId.value = ticketId;
+    openActionsMenuPlacement.value = 'down';
+
+    await nextTick();
+    await updateActionsMenuPlacement(ticketId);
 };
 
 const closeActionsMenu = () => {
     openActionsMenuTicketId.value = null;
+    openActionsMenuPlacement.value = 'down';
 };
 
 const isPinPending = (ticketId) => pinPendingIds.value.includes(ticketId);
+const isTicketSelected = (ticketId) => selectedTicketIds.value.includes(ticketId);
+
+const toggleTicketSelection = (ticketId) => {
+    if (isTicketSelected(ticketId)) {
+        selectedTicketIds.value = selectedTicketIds.value.filter((id) => id !== ticketId);
+        return;
+    }
+
+    selectedTicketIds.value = [...selectedTicketIds.value, ticketId];
+};
+
+const toggleSelectAllOnPage = () => {
+    if (areAllPageTicketsSelected.value) {
+        const idsOnPage = new Set(pageTicketIds.value);
+        selectedTicketIds.value = selectedTicketIds.value.filter((id) => !idsOnPage.has(id));
+        return;
+    }
+
+    const merged = new Set([...selectedTicketIds.value, ...pageTicketIds.value]);
+    selectedTicketIds.value = Array.from(merged);
+};
+
+const clearSelection = () => {
+    selectedTicketIds.value = [];
+};
+
+const normalizeBulkMessage = (data) => {
+    const updated = Number(data?.updated || 0);
+    const unchanged = Number(data?.unchanged || 0);
+    const skipped = Number(data?.skipped_count || 0);
+    const statusUpdated = Number(data?.status_updated || 0);
+    const assignmentUpdated = Number(data?.assignment_updated || 0);
+
+    return `Atualizados: ${updated} (estado: ${statusUpdated}, operador: ${assignmentUpdated}) · Sem alterações: ${unchanged} · Ignorados: ${skipped}`;
+};
+
+const applyBulkStatus = async () => {
+    if (!selectedTicketIds.value.length || !bulkStatus.value || bulkLoading.value) {
+        return;
+    }
+
+    bulkLoading.value = true;
+    error.value = '';
+    success.value = '';
+
+    try {
+        const response = await api.patch('/tickets/bulk', {
+            ticket_ids: selectedTicketIds.value,
+            status: bulkStatus.value,
+        });
+
+        success.value = normalizeBulkMessage(response.data.data);
+        await loadTickets(meta.value.current_page || 1);
+    } catch (exception) {
+        error.value = exception?.response?.data?.message || 'Não foi possível aplicar estado em lote.';
+    } finally {
+        bulkLoading.value = false;
+    }
+};
+
+const applyBulkAssignment = async () => {
+    if (!selectedTicketIds.value.length || bulkAssignedOperatorId.value === '' || bulkLoading.value) {
+        return;
+    }
+
+    bulkLoading.value = true;
+    error.value = '';
+    success.value = '';
+
+    try {
+        const assignedOperatorId = bulkAssignedOperatorId.value === '__none__'
+            ?null
+            : Number(bulkAssignedOperatorId.value);
+
+        const response = await api.patch('/tickets/bulk', {
+            ticket_ids: selectedTicketIds.value,
+            assigned_operator_id: assignedOperatorId,
+        });
+
+        success.value = normalizeBulkMessage(response.data.data);
+        await loadTickets(meta.value.current_page || 1);
+    } catch (exception) {
+        error.value = exception?.response?.data?.message || 'Não foi possível aplicar operador em lote.';
+    } finally {
+        bulkLoading.value = false;
+    }
+};
 
 const toggleTicketPin = async (ticket) => {
     if (!ticket?.id || isPinPending(ticket.id)) {
@@ -227,24 +373,24 @@ const toggleTicketPin = async (ticket) => {
         }
 
         ticket.is_pinned = !ticket.is_pinned;
-        quickActionMessage.value = ticket.is_pinned ? 'Ticket fixado' : 'Ticket desafixado';
         window.dispatchEvent(new CustomEvent('supportdesk:conversations-updated'));
     } catch {
-        quickActionMessage.value = 'Não foi possível atualizar pin';
+        error.value = 'Não foi possível atualizar pin.';
     } finally {
         pinPendingIds.value = pinPendingIds.value.filter((id) => id !== ticket.id);
-        setTimeout(() => {
-            quickActionMessage.value = '';
-        }, 1400);
     }
 };
 
-const openTicketView = async (ticketId, tab = 'conversation') => {
+const openTicketView = async (ticketId, tab = 'conversation', details = false) => {
     closeActionsMenu();
+    const query = { tab };
+    if (details) {
+        query.details = '1';
+    }
     await router.push({
         name: 'tickets.show',
         params: { id: ticketId },
-        query: { tab },
+        query,
     });
 };
 
@@ -275,22 +421,6 @@ const closeFiltersMenuOnOutsideClick = (event) => {
     }
 };
 
-const goToFirstTicket = async () => {
-    if (!tickets.value.length) {
-        quickActionMessage.value = 'Sem tickets para abrir';
-        setTimeout(() => {
-            quickActionMessage.value = '';
-        }, 1400);
-        return;
-    }
-
-    await router.push({ name: 'tickets.show', params: { id: tickets.value[0].id } });
-};
-
-const openNewTicketModal = async () => {
-    await router.push({ name: 'tickets.create' });
-};
-
 const formatDate = (value) => {
     if (!value) return '-';
 
@@ -303,8 +433,8 @@ const formatDate = (value) => {
     });
 };
 
-const entityLabel = (ticket) => ticket.entity?.name ?? '-';
-const creatorLabel = (ticket) => ticket.creator_user?.name ?? ticket.creator_contact?.name ?? '-';
+const entityLabel = (ticket) => ticket.entity?.name || '-';
+const creatorLabel = (ticket) => ticket.creator_user?.name || ticket.creator_contact?.name || '-';
 const entityLinkTarget = (ticket) => {
     if (!canManageUsers.value || !ticket.entity?.id) return null;
     return { name: 'entities.show', params: { id: ticket.entity.id } };
@@ -321,6 +451,12 @@ onMounted(async () => {
     hydrateFiltersFromQuery();
     await loadMeta();
     await loadTickets(1);
+});
+
+watchEffect(() => {
+    if (selectAllCheckboxRef.value) {
+        selectAllCheckboxRef.value.indeterminate = areSomePageTicketsSelected.value;
+    }
 });
 
 onBeforeUnmount(() => {
@@ -358,7 +494,7 @@ onBeforeUnmount(() => {
                         <select v-model="filters.type" @change="applyFilters">
                             <option value="">Todos</option>
                             <option v-for="type in options.types" :key="type" :value="type">
-                                {{ typeLabels[type] ?? type }}
+                                {{ typeLabels[type] || type }}
                             </option>
                         </select>
                     </label>
@@ -380,7 +516,7 @@ onBeforeUnmount(() => {
                         <select v-model="filters.status" @change="applyFilters">
                             <option value="">Todos</option>
                             <option v-for="status in options.statuses" :key="status" :value="status">
-                                {{ statusLabels[status] ?? status }}
+                                {{ statusLabels[status] || status }}
                             </option>
                         </select>
                     </label>
@@ -391,12 +527,12 @@ onBeforeUnmount(() => {
                         <select v-model="filters.priority" @change="applyFilters">
                             <option value="">Todas</option>
                             <option v-for="priority in options.priorities" :key="priority" :value="priority">
-                                {{ priorityLabels[priority] ?? priority }}
+                                {{ priorityLabels[priority] || priority }}
                             </option>
                         </select>
                     </label>
 
-                    <label class="inline-field">
+                    <label class="inline-field is-sort">
                         <span class="field-icon">◷</span>
                         <button type="button" class="link-btn" @click="toggleSort('request_date')">Data pedido</button>
                     </label>
@@ -404,7 +540,11 @@ onBeforeUnmount(() => {
 
                 <div class="filter-actions">
                     <div class="filters-menu">
-                        <button type="button" class="inline-filter-toggle" @click.stop="toggleFiltersMenu">
+                        <button
+                            type="button"
+                            :class="['inline-filter-toggle', { 'is-open': showFiltersMenu }]"
+                            @click.stop="toggleFiltersMenu"
+                        >
                             <svg class="filters-toggle-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                                 <path d="M3 5h18l-7 8v5l-4 2v-7L3 5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
                             </svg>
@@ -434,7 +574,7 @@ onBeforeUnmount(() => {
                                     <select v-model="filters.type" @change="applyFilters">
                                         <option value="">Todos</option>
                                         <option v-for="type in options.types" :key="`menu-type-${type}`" :value="type">
-                                            {{ typeLabels[type] ?? type }}
+                                            {{ typeLabels[type] || type }}
                                         </option>
                                     </select>
                                 </label>
@@ -454,7 +594,7 @@ onBeforeUnmount(() => {
                                     <select v-model="filters.status" @change="applyFilters">
                                         <option value="">Todos</option>
                                         <option v-for="status in options.statuses" :key="`menu-status-${status}`" :value="status">
-                                            {{ statusLabels[status] ?? status }}
+                                            {{ statusLabels[status] || status }}
                                         </option>
                                     </select>
                                 </label>
@@ -464,7 +604,7 @@ onBeforeUnmount(() => {
                                     <select v-model="filters.priority" @change="applyFilters">
                                         <option value="">Todas</option>
                                         <option v-for="priority in options.priorities" :key="`menu-priority-${priority}`" :value="priority">
-                                            {{ priorityLabels[priority] ?? priority }}
+                                            {{ priorityLabels[priority] || priority }}
                                         </option>
                                     </select>
                                 </label>
@@ -507,13 +647,75 @@ onBeforeUnmount(() => {
             </form>
 
             <p v-if="error" class="error">{{ error }}</p>
+            <p v-if="success" class="success">{{ success }}</p>
             <p v-if="loading" class="muted">A carregar...</p>
+
+            <div v-if="!loading && tickets.length" class="bulk-toolbar">
+                <div class="bulk-toolbar-left">
+                    <span class="bulk-count">{{ selectedCount }} selecionado(s)</span>
+                    <button
+                        type="button"
+                        class="btn-clean"
+                        :disabled="selectedCount < 1"
+                        @click="clearSelection"
+                    >
+                        Limpar seleção
+                    </button>
+                </div>
+
+                <div class="bulk-toolbar-actions">
+                    <label class="bulk-field">
+                        <span>Estado</span>
+                        <select v-model="bulkStatus" :disabled="bulkLoading">
+                            <option value="">Selecionar</option>
+                            <option v-for="status in options.statuses" :key="`bulk-status-${status}`" :value="status">
+                                {{ statusLabels[status] || status }}
+                            </option>
+                        </select>
+                    </label>
+                    <button
+                        type="button"
+                        class="btn-primary bulk-btn"
+                        :disabled="selectedCount < 1 || !bulkStatus || bulkLoading"
+                        @click="applyBulkStatus"
+                    >
+                        Aplicar estado
+                    </button>
+
+                    <label class="bulk-field">
+                        <span>Operador</span>
+                        <select v-model="bulkAssignedOperatorId" :disabled="bulkLoading">
+                            <option value="">Selecionar</option>
+                            <option value="__none__">Sem atribuição</option>
+                            <option v-for="operator in options.operators" :key="`bulk-operator-${operator.id}`" :value="String(operator.id)">
+                                {{ operator.name }}
+                            </option>
+                        </select>
+                    </label>
+                    <button
+                        type="button"
+                        class="btn-primary bulk-btn"
+                        :disabled="selectedCount < 1 || bulkAssignedOperatorId === '' || bulkLoading"
+                        @click="applyBulkAssignment"
+                    >
+                        Aplicar operador
+                    </button>
+                </div>
+            </div>
 
             <div class="table-wrap" v-if="!loading">
                 <table class="tickets-table">
                     <thead>
                         <tr>
-                            <th class="check-col"><input type="checkbox" disabled /></th>
+                            <th class="check-col">
+                                <input
+                                    ref="selectAllCheckboxRef"
+                                    type="checkbox"
+                                    :checked="areAllPageTicketsSelected"
+                                    :disabled="!tickets.length || bulkLoading"
+                                    @change="toggleSelectAllOnPage"
+                                />
+                            </th>
                             <th>
                                 <button type="button" class="sort-btn" @click="toggleSort('ticket_number')">
                                     Ticket ID <span class="sort-indicator" :class="`is-${sortState('ticket_number')}`"></span>
@@ -554,8 +756,19 @@ onBeforeUnmount(() => {
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="ticket in tickets" :key="ticket.id">
-                            <td class="check-col"><input type="checkbox" disabled /></td>
+                        <tr
+                            v-for="ticket in tickets"
+                            :key="ticket.id"
+                            :class="{ 'is-selected': isTicketSelected(ticket.id) }"
+                        >
+                            <td class="check-col">
+                                <input
+                                    type="checkbox"
+                                    :checked="isTicketSelected(ticket.id)"
+                                    :disabled="bulkLoading"
+                                    @change="toggleTicketSelection(ticket.id)"
+                                />
+                            </td>
                             <td>
                                 <RouterLink class="ticket-id" :to="{ name: 'tickets.show', params: { id: ticket.id } }">
                                     {{ ticket.ticket_number }}
@@ -568,16 +781,16 @@ onBeforeUnmount(() => {
                             </td>
                             <td>
                                 <span class="priority-pill" :class="`priority-${ticket.priority}`">
-                                    {{ priorityLabels[ticket.priority] ?? ticket.priority }}
+                                    {{ priorityLabels[ticket.priority] || ticket.priority }}
                                 </span>
                             </td>
                             <td>
                                 <span class="status-pill" :class="`status-${ticket.status}`">
-                                    {{ statusLabels[ticket.status] ?? ticket.status }}
+                                    {{ statusLabels[ticket.status] || ticket.status }}
                                 </span>
                             </td>
                             <td>
-                                <span class="type-pill">{{ typeLabels[ticket.type] ?? ticket.type }}</span>
+                                <span class="type-pill">{{ typeLabels[ticket.type] || ticket.type }}</span>
                             </td>
                             <td>
                                 <RouterLink
@@ -599,7 +812,7 @@ onBeforeUnmount(() => {
                                 </RouterLink>
                                 <span v-else>{{ creatorLabel(ticket) }}</span>
                             </td>
-                            <td>{{ formatDate(ticket.created_at ?? ticket.last_activity_at) }}</td>
+                            <td>{{ formatDate(ticket.created_at || ticket.last_activity_at) }}</td>
                             <td class="actions-col">
                                 <div class="row-actions">
                                     <button
@@ -607,8 +820,8 @@ onBeforeUnmount(() => {
                                         class="btn-clean row-action row-pin-btn"
                                         :class="{ 'is-pinned': ticket.is_pinned }"
                                         :disabled="isPinPending(ticket.id)"
-                                        :title="ticket.is_pinned ? 'Desafixar ticket' : 'Fixar ticket'"
-                                        :aria-label="ticket.is_pinned ? 'Desafixar ticket' : 'Fixar ticket'"
+                                        :title="ticket.is_pinned ?'Desafixar ticket' : 'Fixar ticket'"
+                                        :aria-label="ticket.is_pinned ?'Desafixar ticket' : 'Fixar ticket'"
                                         @click.stop="toggleTicketPin(ticket)"
                                     >
                                         <svg class="row-pin-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -617,7 +830,7 @@ onBeforeUnmount(() => {
                                         </svg>
                                     </button>
 
-                                    <div class="actions-menu">
+                                    <div class="actions-menu" :ref="(el) => setActionsMenuRef(ticket.id, el)">
                                     <button
                                         type="button"
                                         class="btn-clean row-action menu-trigger"
@@ -626,9 +839,16 @@ onBeforeUnmount(() => {
                                     >
                                         ⋯
                                     </button>
-                                    <div v-if="openActionsMenuTicketId === ticket.id" class="actions-dropdown" @click.stop>
+                                    <div
+                                        v-if="openActionsMenuTicketId === ticket.id"
+                                        :class="['actions-dropdown', { 'is-open-up': openActionsMenuPlacement === 'up' }]"
+                                        @click.stop
+                                    >
                                         <button type="button" class="menu-item" @click="openTicketView(ticket.id, 'conversation')">
                                             Abrir ticket
+                                        </button>
+                                        <button type="button" class="menu-item" @click="openTicketView(ticket.id, 'conversation', true)">
+                                            Detalhes
                                         </button>
                                         <button type="button" class="menu-item" @click="openTicketView(ticket.id, 'conversation')">
                                             Conversação
@@ -646,7 +866,7 @@ onBeforeUnmount(() => {
                                             Editar
                                         </button>
                                         <button type="button" class="menu-item" @click="toggleTicketPin(ticket)">
-                                            {{ ticket.is_pinned ? 'Desafixar' : 'Fixar' }}
+                                            {{ ticket.is_pinned ?'Desafixar' : 'Fixar' }}
                                         </button>
                                     </div>
                                 </div>
@@ -679,37 +899,6 @@ onBeforeUnmount(() => {
             </footer>
         </article>
 
-        <nav class="quick-actions" aria-label="Ações rápidas">
-            <button type="button" title="Focar pesquisa" @click="focusSearch">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <circle cx="11" cy="11" r="6.2" stroke="currentColor" stroke-width="1.8" />
-                    <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-                </svg>
-            </button>
-            <button type="button" title="Limpar filtros" @click="clearFilters">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-                </svg>
-            </button>
-            <button type="button" title="Atualizar lista" @click="refreshCurrentPage">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M20 11a8 8 0 1 0-2.3 5.6M20 6.5v4h-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-            </button>
-            <button type="button" title="Abrir primeiro ticket" @click="goToFirstTicket">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" stroke-width="1.8" />
-                    <path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-                </svg>
-            </button>
-            <button type="button" title="Novo ticket" @click="openNewTicketModal">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-                </svg>
-            </button>
-        </nav>
-
-        <p v-if="quickActionMessage" class="quick-message">{{ quickActionMessage }}</p>
     </section>
 </template>
 
@@ -782,29 +971,36 @@ h1 {
 .filter-bar {
     display: grid;
     grid-template-columns: minmax(260px, 340px) 1fr auto;
-    gap: 0.55rem;
+    gap: 0.75rem;
     align-items: center;
-    padding: 0.75rem 1rem;
+    padding: 0.85rem 1rem;
     border-bottom: 1px solid #e3ebf5;
-    background: #fbfdff;
+    background: linear-gradient(180deg, #fcfdff 0%, #f6fbff 100%);
 }
 
 .search-field {
-    border: 1px solid #dbe4ee;
-    border-radius: 9px;
+    border: 1px solid #d3deec;
+    border-radius: 12px;
     background: #fff;
-    min-height: 38px;
+    min-height: 42px;
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0 0.5rem;
+    padding: 0 0.7rem;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.search-field:focus-within {
+    border-color: #9dc0e4;
+    box-shadow: 0 0 0 4px rgba(23, 128, 255, 0.12);
 }
 
 .search-kbd {
-    border: 1px solid #dbe4ee;
+    border: 1px solid #d5dfec;
     border-bottom-width: 2px;
     border-radius: 6px;
-    background: #f8fafc;
+    background: #f5f8fc;
     color: #64748b;
     font-size: 0.72rem;
     line-height: 1;
@@ -814,27 +1010,42 @@ h1 {
 .inline-filters {
     display: flex;
     align-items: center;
-    gap: 0.88rem;
+    gap: 0.52rem;
     min-width: 0;
     overflow-x: auto;
-    padding-bottom: 2px;
+    padding: 2px 2px 4px;
 }
 
 .inline-field {
     position: relative;
-    min-height: 34px;
+    min-height: 40px;
     display: inline-flex;
     align-items: center;
-    gap: 0.32rem;
+    gap: 0.36rem;
     color: #475569;
     white-space: nowrap;
     flex: 0 0 auto;
+    border: 1px solid #d7e3f0;
+    border-radius: 999px;
+    background: #fff;
+    padding: 0 0.52rem;
+    transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.inline-field:hover {
+    border-color: #b8cde3;
+    background: #fafdff;
+}
+
+.inline-field:focus-within {
+    border-color: #95b5d8;
+    box-shadow: 0 0 0 3px rgba(35, 126, 214, 0.14);
 }
 
 .field-icon {
-    color: #64748b;
+    color: #60758f;
     font-size: 1rem;
-    width: 16px;
+    width: 15px;
     display: inline-flex;
     justify-content: center;
     align-items: center;
@@ -842,24 +1053,48 @@ h1 {
 }
 
 .ddl-name {
-    color: #475569;
-    font-size: 0.86rem;
+    color: #3f526a;
+    font-size: 0.83rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
 }
 
 .link-btn {
     border: none;
     background: transparent;
-    color: #475569;
+    color: #334155;
     font: inherit;
     padding: 0;
     cursor: pointer;
+    font-size: 0.86rem;
+    font-weight: 600;
 }
 
 .inline-field select {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    border: 0;
+    background: transparent;
+    width: auto;
+    min-width: 66px;
+    color: #0f172a;
+    font-size: 0.86rem;
+    font-weight: 500;
+    padding: 0.1rem 1rem 0.1rem 0.06rem;
     cursor: pointer;
+}
+
+.inline-field::after {
+    content: '▾';
+    font-size: 0.66rem;
+    color: #7c8da2;
+    margin-left: -0.72rem;
+    pointer-events: none;
+}
+
+.inline-field.is-sort::after {
+    display: none;
 }
 
 input,
@@ -881,7 +1116,7 @@ select:focus {
 .filter-actions {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.5rem;
     justify-content: flex-start;
     flex: 0 0 auto;
 }
@@ -893,17 +1128,33 @@ select:focus {
 .inline-filter-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    border: none;
-    background: transparent;
-    color: #475569;
-    padding: 0.22rem 0.1rem;
+    gap: 0.48rem;
+    border: 1px solid #cddced;
+    background: #fff;
+    color: #334155;
+    padding: 0.46rem 0.72rem;
+    border-radius: 999px;
+    font-size: 0.88rem;
+    font-weight: 600;
     cursor: pointer;
+    transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.inline-filter-toggle:hover {
+    border-color: #9ab9d8;
+    background: #f3f9ff;
+}
+
+.inline-filter-toggle.is-open {
+    border-color: #2b5d8d;
+    background: #e8f0fa;
+    color: #173e64;
+    box-shadow: 0 0 0 3px rgba(31, 78, 121, 0.12);
 }
 
 .filters-toggle-icon {
-    width: 16px;
-    height: 16px;
+    width: 15px;
+    height: 15px;
 }
 
 .filters-count {
@@ -913,74 +1164,82 @@ select:focus {
     min-width: 1.25rem;
     height: 1.25rem;
     border-radius: 999px;
-    background: #e8fbf2;
-    border: 1px solid #9fd9c2;
-    color: #0f766e;
+    background: #ffffff;
+    border: 1px solid rgba(31, 78, 121, 0.28);
+    color: #1F4E79;
     font-size: 0.78rem;
     line-height: 1;
+    font-weight: 700;
 }
 
 .filters-dropdown {
     position: absolute;
-    top: calc(100% + 0.38rem);
-    right: -0.4rem;
+    top: calc(100% + 0.55rem);
+    right: 0;
     z-index: 40;
-    width: min(620px, calc(100vw - 3rem));
-    border: 1px solid #dbe4ee;
-    border-radius: 14px;
-    background: #fff;
-    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
-    padding: 0.85rem;
+    width: min(680px, calc(100vw - 3rem));
+    border: 1px solid #cfe0f1;
+    border-radius: 18px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    box-shadow: 0 24px 42px rgba(15, 23, 42, 0.22);
+    backdrop-filter: blur(8px);
+    padding: 0.95rem;
 }
 
 .filters-dropdown-header {
     display: grid;
-    gap: 0.12rem;
-    margin-bottom: 0.6rem;
+    gap: 0.15rem;
+    margin-bottom: 0.75rem;
 }
 
 .filters-dropdown-header h3 {
     margin: 0;
-    font-size: 1rem;
+    font-size: 1.02rem;
     color: #0f172a;
 }
 
 .filters-dropdown-header p {
     margin: 0;
     color: #64748b;
-    font-size: 0.83rem;
+    font-size: 0.84rem;
 }
 
 .filters-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.7rem;
-    padding-bottom: 0.5rem;
+    gap: 0.72rem;
+    padding-bottom: 0.6rem;
 }
 
 .filters-grid label {
     display: grid;
-    gap: 0.24rem;
+    gap: 0.3rem;
     color: #334155;
-    font-size: 0.88rem;
+    font-size: 0.83rem;
+    font-weight: 600;
+    border: 1px solid #dbe5f1;
+    border-radius: 12px;
+    background: #ffffff;
+    padding: 0.52rem 0.56rem;
 }
 
 .filters-grid select {
-    border: 1px solid #dbe4ee;
-    border-radius: 8px;
-    padding: 0.42rem 0.55rem;
+    border: 1px solid #cfdbe9;
+    border-radius: 9px;
+    padding: 0.44rem 0.55rem;
     font: inherit;
     color: #0f172a;
-    background: #fff;
+    background: #fdfefe;
     width: 100%;
     appearance: auto;
     -webkit-appearance: auto;
     -moz-appearance: auto;
+    font-weight: 500;
 }
 
 .filters-dropdown-footer {
-    border-top: 1px solid #e7edf6;
-    padding-top: 0.6rem;
+    border-top: 1px solid #dce7f3;
+    padding-top: 0.7rem;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -988,13 +1247,16 @@ select:focus {
 }
 
 .filters-helper {
-    color: #64748b;
+    color: #5b6f87;
     font-size: 0.82rem;
+    font-weight: 600;
 }
 
 .filters-clear-btn {
-    border-color: #cdd8e6;
-    color: #334155;
+    border-color: #c8d6e6;
+    color: #344759;
+    border-radius: 999px;
+    padding: 0.4rem 0.7rem;
 }
 
 .table-wrap {
@@ -1084,6 +1346,12 @@ select:focus {
     text-align: center;
 }
 
+.check-col input[type='checkbox'] {
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+}
+
 .actions-col {
     width: 120px;
     text-align: center;
@@ -1116,8 +1384,8 @@ select:focus {
 }
 
 .table-ref-link:hover {
-    color: #0f766e;
-    border-bottom-color: #0f766e;
+    color: #1F4E79;
+    border-bottom-color: #1F4E79;
 }
 
 .priority-pill,
@@ -1131,15 +1399,15 @@ select:focus {
     border: 1px solid transparent;
 }
 
-.priority-low { color: #166534; background: #dcfce7; border-color: #bbf7d0; }
+.priority-low { color: #1f4e79; background: #edf4fb; border-color: #bbf7d0; }
 .priority-medium { color: #854d0e; background: #fef3c7; border-color: #fde68a; }
 .priority-high { color: #991b1b; background: #fee2e2; border-color: #fecaca; }
 .priority-urgent { color: #7f1d1d; background: #fee2e2; border-color: #fca5a5; }
 
-.status-open { color: #166534; background: #dcfce7; border-color: #86efac; }
+.status-open { color: #1f4e79; background: #edf4fb; border-color: #b9cde4; }
 .status-in_progress { color: #1d4ed8; background: #dbeafe; border-color: #93c5fd; }
 .status-pending { color: #854d0e; background: #fef3c7; border-color: #fcd34d; }
-.status-closed { color: #065f46; background: #d1fae5; border-color: #6ee7b7; }
+.status-closed { color: #1F4E79; background: #e7f0fa; border-color: #bfd5eb; }
 .status-cancelled { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
 
 .type-pill {
@@ -1220,6 +1488,11 @@ select:focus {
     gap: 0.32rem;
 }
 
+.actions-dropdown.is-open-up {
+    top: auto;
+    bottom: calc(100% + 0.3rem);
+}
+
 .menu-item {
     width: 100%;
     border: 1px solid #cbd5e1;
@@ -1239,6 +1512,10 @@ select:focus {
     color: #64748b;
     text-align: center;
     padding: 1rem;
+}
+
+.tickets-table tbody tr.is-selected {
+    background: #f0fdf4;
 }
 
 .pager {
@@ -1262,52 +1539,59 @@ select:focus {
     background: #fef2f2;
 }
 
-.quick-actions {
-    position: fixed;
-    right: 1.7rem;
-    top: 50%;
-    transform: translateY(-50%);
-    display: grid;
-    gap: 0.45rem;
-    z-index: 65;
-}
-
-.quick-actions button {
-    width: 46px;
-    height: 46px;
-    border-radius: 999px;
-    border: 1px solid #d9e2ee;
-    background: #f8fafc;
-    color: #64748b;
-    display: grid;
-    place-items: center;
-    cursor: pointer;
-    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
-}
-
-.quick-actions button:hover {
-    background: #e8fbf2;
-    color: #0f766e;
-    border-color: #9fd9c2;
-}
-
-.quick-actions svg {
-    width: 22px;
-    height: 22px;
-}
-
-.quick-message {
-    position: fixed;
-    right: 1.6rem;
-    top: calc(50% + 190px);
+.success {
     margin: 0;
-    z-index: 66;
-    border: 1px solid #9fd9c2;
-    background: #ecfdf5;
-    color: #0d704e;
-    border-radius: 8px;
-    padding: 0.34rem 0.5rem;
-    font-size: 0.82rem;
+    padding: 0.65rem 1rem;
+    color: #1F4E79;
+    border-bottom: 1px solid #c8d8ea;
+    background: #EDF3FA;
+}
+
+.bulk-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 0.8rem;
+    padding: 0.7rem 1rem;
+    border-bottom: 1px solid #e3ebf5;
+    background: #f8fbff;
+}
+
+.bulk-toolbar-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+}
+
+.bulk-count {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #334155;
+}
+
+.bulk-toolbar-actions {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.bulk-field {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 160px;
+}
+
+.bulk-field > span {
+    font-size: 0.75rem;
+    color: #64748b;
+    font-weight: 600;
+}
+
+.bulk-btn {
+    padding: 0.45rem 0.8rem;
+    min-height: 36px;
 }
 
 @media (max-width: 1280px) {
@@ -1331,9 +1615,15 @@ select:focus {
         justify-content: flex-end;
     }
 
-    .quick-actions {
-        right: 1.05rem;
+    .bulk-toolbar {
+        flex-direction: column;
+        align-items: stretch;
     }
+
+    .bulk-toolbar-actions {
+        justify-content: flex-start;
+    }
+
 }
 
 @media (max-width: 720px) {
@@ -1376,27 +1666,13 @@ select:focus {
         justify-content: flex-start;
     }
 
-    .quick-actions {
-        position: sticky;
-        top: auto;
-        right: auto;
-        transform: none;
-        margin-top: 0.55rem;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        background: #fff;
-        border: 1px solid #d9e2ee;
-        border-radius: 12px;
-        padding: 0.4rem;
+    .bulk-toolbar-left {
+        justify-content: space-between;
     }
 
-    .quick-actions button {
-        width: 100%;
-        border-radius: 10px;
+    .bulk-field {
+        min-width: 100%;
     }
 
-    .quick-message {
-        position: static;
-        width: fit-content;
-    }
 }
 </style>

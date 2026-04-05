@@ -17,11 +17,7 @@ class TicketPolicy
         }
 
         if ($user->isOperator()) {
-            if ($user->isAdmin()) {
-                return true;
-            }
-
-            return $user->accessibleInboxes()->exists();
+            return true;
         }
 
         return $user->entities()->exists();
@@ -37,7 +33,8 @@ class TicketPolicy
         }
 
         if ($user->isOperator()) {
-            return $user->hasInboxAccess($ticket->inbox_id);
+            return $user->hasInboxAccess($ticket->inbox_id)
+                || (int) $ticket->created_by_user_id === (int) $user->id;
         }
 
         return $user->entities()->whereKey($ticket->entity_id)->exists();

@@ -106,6 +106,14 @@ const sortState = (field) => {
     return sortDir.value === 'asc' ? 'asc' : 'desc';
 };
 
+const userInitials = (fullName) => {
+    const value = String(fullName || '').trim();
+    if (!value) return 'U';
+
+    const parts = value.split(/\s+/).filter(Boolean);
+    return parts.slice(0, 2).map((part) => (part[0] || '').toUpperCase()).join('') || 'U';
+};
+
 const accessSummary = (user) => {
     if (user.role === 'operator') {
         if (!user.inboxes?.length) return 'Sem inboxes';
@@ -583,7 +591,7 @@ onBeforeUnmount(() => {
             :can-set-admin="canSetAdmin"
             :manageable-inboxes="manageableInboxes"
             title="Editar utilizador"
-            subtitle="Atualizar dados do utilizador e permissões de acesso."
+            subtitle="Atualizar dados do utilizador e permissÃµes de acesso."
             @close="closeEditUserModal"
             @save="saveEditedUser"
             @toggle-inbox="toggleEditInbox"
@@ -676,9 +684,15 @@ onBeforeUnmount(() => {
                 <tbody>
                     <tr v-for="user in users" :key="user.id">
                         <td>
-                            <RouterLink class="user-name-link" :to="{ name: 'users.show', params: { id: user.id } }">
-                                {{ user.name }}
-                            </RouterLink>
+                            <div class="user-name-cell">
+                                <RouterLink class="user-avatar-link" :to="{ name: 'users.show', params: { id: user.id } }" :aria-label="`Abrir detalhe de ${user.name}`">
+                                    <img v-if="user.avatar_url" :src="user.avatar_url" :alt="`Avatar de ${user.name}`">
+                                    <span v-else>{{ userInitials(user.name) }}</span>
+                                </RouterLink>
+                                <RouterLink class="user-name-link" :to="{ name: 'users.show', params: { id: user.id } }">
+                                    {{ user.name }}
+                                </RouterLink>
+                            </div>
                         </td>
                         <td>{{ user.email }}</td>
                         <td>{{ user.role === 'operator' ? (user.is_admin ? 'Operador admin' : 'Operador') : 'Cliente' }}</td>
@@ -771,9 +785,9 @@ h2 {
 }
 
 .success {
-    border: 1px solid #a7f3d0;
-    background: #ecfdf5;
-    color: #065f46;
+    border: 1px solid #c8d8ea;
+    background: #EDF3FA;
+    color: #1F4E79;
     border-radius: 8px;
     padding: 0.65rem;
 }
@@ -839,8 +853,8 @@ select {
 }
 
 button {
-    border: 1px solid #0f766e;
-    background: #0f766e;
+    border: 1px solid #1F4E79;
+    background: #1F4E79;
     color: #fff;
     border-radius: 8px;
     padding: 0.5rem 0.65rem;
@@ -869,19 +883,52 @@ button.danger {
 }
 
 .ticket-count-link:hover {
-    border-color: #9fd9c2;
-    background: #ecfdf5;
-    color: #0f766e;
+    border-color: #9ab9d8;
+    background: #EDF3FA;
+    color: #1F4E79;
+}
+
+.user-name-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.user-avatar-link {
+    width: 32px;
+    height: 32px;
+    border-radius: 999px;
+    border: 2px solid #b6c9e3;
+    overflow: hidden;
+    background: linear-gradient(145deg, #1f2a44 0%, #2e3e66 100%);
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    font-size: 0.72rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.82), 0 2px 7px rgba(15, 23, 42, 0.1);
+}
+
+.user-avatar-link img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
 }
 
 .user-name-link {
     color: #0f172a;
     text-decoration: none;
     font-weight: 600;
+    min-width: 0;
 }
 
 .user-name-link:hover {
-    color: #0f766e;
+    color: #1F4E79;
     text-decoration: underline;
 }
 
@@ -1005,9 +1052,9 @@ button.danger {
     min-width: 1.25rem;
     height: 1.25rem;
     border-radius: 999px;
-    background: #e8fbf2;
-    border: 1px solid #9fd9c2;
-    color: #0f766e;
+    background: #e8f0fa;
+    border: 1px solid #9ab9d8;
+    color: #1F4E79;
     font-size: 0.78rem;
     line-height: 1;
 }
@@ -1274,3 +1321,5 @@ td {
     }
 }
 </style>
+
+

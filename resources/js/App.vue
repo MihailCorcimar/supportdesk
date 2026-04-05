@@ -289,7 +289,18 @@ onUnmounted(() => {
                     <p><span>Utilizador</span><strong>{{ user.name }}</strong></p>
                 </div>
 
-                <button v-if="isSidebarOpen" type="button" class="sidebar-logout" @click="logout">Terminar sessão</button>
+                <button v-if="isSidebarOpen" type="button" class="sidebar-logout" @click="logout">
+                    <span class="sidebar-logout-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path d="M10 5.2a7 7 0 1 0 7.9 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                            <path d="M14 12h7m0 0-2.5-2.5M21 12l-2.5 2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                    </span>
+                    <span class="sidebar-logout-copy">
+                        <span class="sidebar-logout-label">Terminar sessão</span>
+                        <span class="sidebar-logout-hint">Sair da conta atual</span>
+                    </span>
+                </button>
             </aside>
 
             <div class="content-shell">
@@ -655,9 +666,66 @@ body {
 
 .sidebar-logout {
     margin-top: auto;
-    color: #8b1f1f;
-    border-color: #f3c4c4;
-    background: #fff6f6;
+    width: 100%;
+    justify-content: flex-start;
+    gap: 0.62rem;
+    padding: 0.56rem 0.62rem;
+    color: #8f1f28;
+    border-color: #efc4c6;
+    background: linear-gradient(135deg, #ffffff 0%, #fff2f3 100%);
+    box-shadow: 0 10px 18px rgba(127, 29, 29, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.sidebar-logout:hover {
+    transform: translateY(-1px);
+    color: #7f1d1d;
+    border-color: #e69ca2;
+    background: linear-gradient(135deg, #fff9f9 0%, #ffecee 100%);
+    box-shadow: 0 12px 20px rgba(127, 29, 29, 0.11), inset 0 1px 0 rgba(255, 255, 255, 0.96);
+}
+
+.sidebar-logout:active {
+    transform: translateY(0);
+}
+
+.sidebar-logout:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.16), 0 10px 18px rgba(127, 29, 29, 0.08);
+}
+
+.sidebar-logout-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    border: 1px solid #efb7bc;
+    background: rgba(255, 255, 255, 0.86);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
+.sidebar-logout-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.sidebar-logout-copy {
+    display: grid;
+    gap: 0.03rem;
+    min-width: 0;
+}
+
+.sidebar-logout-label {
+    font-weight: 650;
+    line-height: 1.12;
+}
+
+.sidebar-logout-hint {
+    font-size: 0.72rem;
+    color: #a24952;
+    line-height: 1.1;
 }
 
 .content-shell {
@@ -732,6 +800,7 @@ body {
     }
 }
 </style>
+
 
 
 

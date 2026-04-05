@@ -84,6 +84,7 @@ class TicketApiController extends Controller
         $followers = $this->followerCandidatesForUser($user);
         $ticketStatuses = $this->ticketStatuses();
         $ticketTypes = $this->ticketTypes();
+        $triageInbox = $this->triageInbox();
 
         $contacts = Contact::query()
             ->with('entities:id,name')
@@ -104,7 +105,12 @@ class TicketApiController extends Controller
                     'id' => $user->id,
                     'name' => $user->name,
                     'role' => $user->role,
+                    'avatar_url' => $this->avatarUrlForUser($user),
                 ],
+                'triage_inbox' => $triageInbox ? [
+                    'id' => $triageInbox->id,
+                    'name' => $triageInbox->name,
+                ] : null,
                 'inboxes' => $this->inboxesForUser($user)->map(fn (Inbox $inbox) => [
                     'id' => $inbox->id,
                     'name' => $inbox->name,
@@ -122,12 +128,16 @@ class TicketApiController extends Controller
                 'operators' => $operators->map(fn (User $operator) => [
                     'id' => $operator->id,
                     'name' => $operator->name,
+                    'email' => $operator->email,
+                    'avatar_url' => $this->avatarUrlForUser($operator),
                 ])->values(),
                 'followers' => $followers->map(fn (User $follower) => [
                     'id' => $follower->id,
                     'name' => $follower->name,
                     'email' => $follower->email,
                     'role' => $follower->role,
+                    'avatar_url' => $this->avatarUrlForUser($follower),
+                    'inbox_ids' => $this->candidateInboxIdsForFollower($follower),
                 ])->values(),
                 'statuses' => $ticketStatuses->pluck('code')->values(),
                 'create_statuses' => $ticketStatuses
@@ -148,6 +158,7 @@ class TicketApiController extends Controller
         $this->authorize('create', Ticket::class);
 
         $user = $request->user();
+        $mustUseTriageInbox = $this->mustUseTriageInbox($user);
 
         $validated = $request->validate([
             'inbox_id' => ['required', 'integer', Rule::exists('inboxes', 'id')],
@@ -167,7 +178,23 @@ class TicketApiController extends Controller
             'attachments.*' => ['file', 'max:10240', 'mimes:jpg,jpeg,png,pdf,doc,docx,xls,xlsx,txt,csv,zip'],
         ]);
 
-        if ($user->isOperator() && ! $user->hasInboxAccess((int) $validated['inbox_id'])) {
+        $targetInboxId = (int) $validated['inbox_id'];
+        if ($mustUseTriageInbox) {
+            $triageInbox = $this->triageInbox();
+            if (! $triageInbox) {
+                throw ValidationException::withMessages([
+                    'inbox_id' => 'Inbox Geral is not configured.',
+                ]);
+            }
+
+            $targetInboxId = (int) $triageInbox->id;
+        }
+
+        if (
+            $user->isOperator()
+            && ! $mustUseTriageInbox
+            && ! $user->hasInboxAccess($targetInboxId)
+        ) {
             abort(403);
         }
 
@@ -175,13 +202,22 @@ class TicketApiController extends Controller
             abort(403);
         }
 
+        if (
+            ! empty($validated['assigned_operator_id'])
+            && ! ($user->isAdmin() || $user->hasInboxManagementAccess($targetInboxId))
+        ) {
+            throw ValidationException::withMessages([
+                'assigned_operator_id' => 'Only inbox managers can assign operators when creating tickets.',
+            ]);
+        }
+
         $contact = $this->resolveTicketContact($user, (int) $validated['entity_id'], $validated['contact_id'] ?? null);
-        $assignedOperator = $this->resolveAssignedOperator($validated['assigned_operator_id'] ?? null, (int) $validated['inbox_id']);
+        $assignedOperator = $this->resolveAssignedOperator($validated['assigned_operator_id'] ?? null, $targetInboxId);
         $ccEmails = $this->parseCcEmails($validated['cc_emails'] ?? null);
-        $followerUserIds = $this->parseFollowerUserIds($validated['follower_user_ids'] ?? [], $user);
+        $followerUserIds = $this->parseFollowerUserIds($validated['follower_user_ids'] ?? [], $user, $targetInboxId);
         $descriptionFormat = $this->normalizeMessageFormat($validated['description_format'] ?? null);
         $descriptionBody = $this->normalizeMessageBody($validated['description'] ?? '', $descriptionFormat);
-        $initialStatus = $user->isOperator() ? ($validated['status'] ?? 'open') : 'open';
+        $initialStatus = $mustUseTriageInbox ? 'open' : ($validated['status'] ?? 'open');
         /** @var array<int, UploadedFile> $files */
         $files = $request->file('attachments', []);
 
@@ -201,11 +237,12 @@ class TicketApiController extends Controller
             $initialStatus,
             $descriptionFormat,
             $descriptionBody,
+            $targetInboxId,
             $files
         ) {
             $ticket = Ticket::query()->create([
                 'ticket_number' => 'TMP-'.(string) Str::ulid(),
-                'inbox_id' => $validated['inbox_id'],
+                'inbox_id' => $targetInboxId,
                 'entity_id' => $validated['entity_id'],
                 'contact_id' => $contact?->id,
                 'creator_contact_id' => $contact?->id,
@@ -399,7 +436,7 @@ class TicketApiController extends Controller
             ->where('is_active', true)
             ->orderBy('name')
             ->get();
-        $availableFollowers = $this->followerCandidatesForUser($request->user());
+        $availableFollowers = $this->followerCandidatesForUser($request->user(), (int) $ticket->inbox_id);
         $navigation = $this->adjacentTickets($ticket, $request->user());
         $isPinned = UserPinnedTicket::query()
             ->where('user_id', $request->user()->id)
@@ -455,11 +492,13 @@ class TicketApiController extends Controller
         $followerSyncIds = null;
         $statusChanged = false;
         $assignmentChanged = false;
+        $knowledgeChanged = false;
 
         $targetInboxId = (int) ($validated['inbox_id'] ?? $ticket->inbox_id);
         $targetEntityId = (int) ($validated['entity_id'] ?? $ticket->entity_id);
+        $inboxChanged = array_key_exists('inbox_id', $validated) && $targetInboxId !== (int) $ticket->inbox_id;
 
-        if (array_key_exists('inbox_id', $validated) && $targetInboxId !== (int) $ticket->inbox_id) {
+        if ($inboxChanged) {
             if (! $user->isAdmin()) {
                 abort(403, 'Only admins can move tickets between inboxes.');
             }
@@ -517,11 +556,12 @@ class TicketApiController extends Controller
                     'old' => implode(', ', $ticket->cc_emails ?? []),
                     'new' => implode(', ', $newCc),
                 ];
+                $knowledgeChanged = true;
             }
         }
 
         if (array_key_exists('follower_user_ids', $validated)) {
-            $newFollowerIds = $this->parseFollowerUserIds($validated['follower_user_ids'], $user);
+            $newFollowerIds = $this->parseFollowerUserIds($validated['follower_user_ids'], $user, $targetInboxId);
             $currentFollowerIds = $ticket->followers()
                 ->pluck('users.id')
                 ->map(fn (int|string $id) => (int) $id)
@@ -541,6 +581,21 @@ class TicketApiController extends Controller
                     'old' => implode(', ', $currentFollowerIds),
                     'new' => implode(', ', $newFollowerIds),
                 ];
+                $knowledgeChanged = true;
+            }
+        }
+
+        if ($inboxChanged && ! array_key_exists('follower_user_ids', $validated)) {
+            [$newFollowerIds, $removedFollowerIds] = $this->filterFollowerIdsForInbox($ticket, $targetInboxId);
+
+            if ($removedFollowerIds !== []) {
+                $followerSyncIds = $newFollowerIds;
+                $changes[] = [
+                    'field' => 'follower_user_ids',
+                    'old' => implode(', ', $ticket->followers()->pluck('users.id')->all()),
+                    'new' => implode(', ', $newFollowerIds),
+                ];
+                $knowledgeChanged = true;
             }
         }
 
@@ -566,13 +621,26 @@ class TicketApiController extends Controller
             }
         }
 
-        if (array_key_exists('assigned_operator_id', $validated) || array_key_exists('inbox_id', $validated)) {
+        if (array_key_exists('assigned_operator_id', $validated) || $inboxChanged) {
             if (array_key_exists('assigned_operator_id', $validated) && ! $user->can('assign', $ticket)) {
                 abort(403, 'Only admins or inbox managers can assign operators.');
             }
 
+            $candidateOperatorId = array_key_exists('assigned_operator_id', $validated)
+                ? $validated['assigned_operator_id']
+                : $ticket->assigned_operator_id;
+
+            if (
+                $inboxChanged
+                && ! array_key_exists('assigned_operator_id', $validated)
+                && $ticket->assignedOperator
+                && ! $ticket->assignedOperator->hasInboxAccess($targetInboxId)
+            ) {
+                $candidateOperatorId = null;
+            }
+
             $newOperator = $this->resolveAssignedOperator(
-                array_key_exists('assigned_operator_id', $validated) ? $validated['assigned_operator_id'] : $ticket->assigned_operator_id,
+                $candidateOperatorId,
                 $targetInboxId
             );
 
@@ -655,10 +723,207 @@ class TicketApiController extends Controller
             $this->notificationService->notifyAssignmentUpdated($ticket);
         }
 
+        if ($knowledgeChanged) {
+            $this->notificationService->notifyKnowledgeUpdated($ticket);
+        }
+
         return response()->json([
             'message' => 'Ticket updated successfully.',
             'data' => [
                 'ticket_id' => $ticket->id,
+            ],
+        ]);
+    }
+
+    /**
+     * Bulk update ticket status and/or assignment.
+     */
+    public function bulkUpdate(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'ticket_ids' => ['required', 'array', 'min:1', 'max:200'],
+            'ticket_ids.*' => ['integer', 'distinct', Rule::exists('tickets', 'id')],
+            'status' => ['nullable', Rule::exists('ticket_statuses', 'code')],
+            'assigned_operator_id' => ['sometimes', 'nullable', 'integer', Rule::exists('users', 'id')],
+        ]);
+
+        $applyStatus = array_key_exists('status', $validated)
+            && $validated['status'] !== null
+            && $validated['status'] !== '';
+        $applyAssignment = array_key_exists('assigned_operator_id', $validated);
+
+        if (! $applyStatus && ! $applyAssignment) {
+            throw ValidationException::withMessages([
+                'status' => 'Indica um estado e/ou operador para aplicar em lote.',
+            ]);
+        }
+
+        $ticketIds = collect($validated['ticket_ids'])
+            ->map(fn (int|string $id): int => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        $ticketsById = Ticket::query()
+            ->whereIn('id', $ticketIds)
+            ->with(['assignedOperator'])
+            ->get()
+            ->keyBy('id');
+
+        $updated = 0;
+        $statusUpdated = 0;
+        $assignmentUpdated = 0;
+        $unchanged = 0;
+        $skipped = [];
+
+        foreach ($ticketIds as $ticketId) {
+            /** @var Ticket|null $ticket */
+            $ticket = $ticketsById->get($ticketId);
+
+            if (! $ticket) {
+                $skipped[] = [
+                    'ticket_id' => $ticketId,
+                    'ticket_number' => null,
+                    'reason' => 'Ticket não encontrado.',
+                ];
+                continue;
+            }
+
+            $updates = [];
+            $skipReasons = [];
+            $statusChanged = false;
+            $assignmentChanged = false;
+            $oldStatus = null;
+            $newStatus = null;
+            $oldOperatorId = null;
+            $newOperatorId = null;
+
+            if ($applyStatus) {
+                if (! $user->can('updateStatus', $ticket)) {
+                    $skipReasons[] = 'Sem permissão para alterar estado.';
+                } else {
+                    $candidateStatus = (string) $validated['status'];
+
+                    if ($ticket->status !== $candidateStatus) {
+                        if (
+                            in_array($candidateStatus, ['closed', 'cancelled'], true)
+                            && $ticket->assigned_operator_id
+                            && (int) $ticket->assigned_operator_id !== (int) $user->id
+                        ) {
+                            $skipReasons[] = 'Apenas o operador atribuído pode fechar/cancelar.';
+                        } else {
+                            $oldStatus = (string) $ticket->status;
+                            $newStatus = $candidateStatus;
+                            $updates['status'] = $candidateStatus;
+
+                            foreach ($this->statusTimestampUpdates($ticket, $candidateStatus) as $field => $value) {
+                                $updates[$field] = $value;
+                            }
+
+                            $statusChanged = true;
+                        }
+                    }
+                }
+            }
+
+            if ($applyAssignment) {
+                if (! $user->can('assign', $ticket)) {
+                    $skipReasons[] = 'Sem permissão para alterar atribuição.';
+                } else {
+                    $newOperator = $this->resolveAssignedOperator(
+                        $validated['assigned_operator_id'] ?? null,
+                        (int) $ticket->inbox_id
+                    );
+
+                    if ((int) ($ticket->assigned_operator_id ?? 0) !== (int) ($newOperator?->id ?? 0)) {
+                        $oldOperatorId = $ticket->assigned_operator_id;
+                        $newOperatorId = $newOperator?->id;
+                        $updates['assigned_operator_id'] = $newOperatorId;
+                        $assignmentChanged = true;
+                    }
+                }
+            }
+
+            if ($updates === []) {
+                if ($skipReasons !== []) {
+                    $skipped[] = [
+                        'ticket_id' => $ticket->id,
+                        'ticket_number' => $ticket->ticket_number,
+                        'reason' => implode(' ', array_unique($skipReasons)),
+                    ];
+                } else {
+                    $unchanged++;
+                }
+                continue;
+            }
+
+            $updates['last_activity_at'] = now();
+
+            DB::transaction(function () use (
+                $ticket,
+                $updates,
+                $statusChanged,
+                $oldStatus,
+                $newStatus,
+                $assignmentChanged,
+                $oldOperatorId,
+                $newOperatorId,
+                $user
+            ): void {
+                $ticket->update($updates);
+
+                if ($statusChanged) {
+                    TicketActivityLogger::log(
+                        $ticket,
+                        'status_updated',
+                        'status',
+                        $oldStatus,
+                        $newStatus,
+                        'user',
+                        $user->id
+                    );
+                }
+
+                if ($assignmentChanged) {
+                    TicketActivityLogger::log(
+                        $ticket,
+                        'assignment_updated',
+                        'assigned_operator_id',
+                        $oldOperatorId,
+                        $newOperatorId,
+                        'user',
+                        $user->id
+                    );
+                }
+            });
+
+            $ticket->refresh();
+
+            if ($statusChanged) {
+                $this->notificationService->notifyStatusUpdated($ticket);
+                $statusUpdated++;
+            }
+
+            if ($assignmentChanged) {
+                $this->notificationService->notifyAssignmentUpdated($ticket);
+                $assignmentUpdated++;
+            }
+
+            $updated++;
+        }
+
+        return response()->json([
+            'message' => 'Atualização em lote concluída.',
+            'data' => [
+                'requested' => count($ticketIds),
+                'updated' => $updated,
+                'status_updated' => $statusUpdated,
+                'assignment_updated' => $assignmentUpdated,
+                'unchanged' => $unchanged,
+                'skipped_count' => count($skipped),
+                'skipped' => $skipped,
             ],
         ]);
     }
@@ -828,6 +1093,9 @@ class TicketApiController extends Controller
         $updates = [];
         $changes = [];
         $followerSyncIds = null;
+        $knowledgeChanged = false;
+        $targetInboxId = (int) ($validated['inbox_id'] ?? $ticket->inbox_id);
+        $inboxChanged = array_key_exists('inbox_id', $validated) && $targetInboxId !== (int) $ticket->inbox_id;
 
         if (array_key_exists('subject', $validated) && $validated['subject'] !== $ticket->subject) {
             $updates['subject'] = $validated['subject'];
@@ -844,19 +1112,19 @@ class TicketApiController extends Controller
             $changes[] = ['field' => 'type', 'old' => $ticket->type, 'new' => $validated['type']];
         }
 
-        if (array_key_exists('inbox_id', $validated) && (int) $validated['inbox_id'] !== $ticket->inbox_id) {
+        if ($inboxChanged) {
             if (! $user->isAdmin()) {
                 abort(403, 'Only admins can move tickets between inboxes.');
             }
 
-            if (! $user->hasInboxAccess((int) $validated['inbox_id'])) {
+            if (! $user->hasInboxAccess($targetInboxId)) {
                 abort(403, 'You cannot move this ticket to an inbox you cannot access.');
             }
 
-            $updates['inbox_id'] = (int) $validated['inbox_id'];
-            $changes[] = ['field' => 'inbox_id', 'old' => $ticket->inbox_id, 'new' => (int) $validated['inbox_id']];
+            $updates['inbox_id'] = $targetInboxId;
+            $changes[] = ['field' => 'inbox_id', 'old' => $ticket->inbox_id, 'new' => $targetInboxId];
 
-            if ($ticket->assignedOperator && ! $ticket->assignedOperator->hasInboxAccess((int) $validated['inbox_id'])) {
+            if ($ticket->assignedOperator && ! $ticket->assignedOperator->hasInboxAccess($targetInboxId)) {
                 $changes[] = [
                     'field' => 'assigned_operator_id',
                     'old' => $ticket->assigned_operator_id,
@@ -879,11 +1147,12 @@ class TicketApiController extends Controller
                     'old' => implode(', ', $ticket->cc_emails ?? []),
                     'new' => implode(', ', $newCc),
                 ];
+                $knowledgeChanged = true;
             }
         }
 
         if (array_key_exists('follower_user_ids', $validated)) {
-            $newFollowerIds = $this->parseFollowerUserIds($validated['follower_user_ids'], $user);
+            $newFollowerIds = $this->parseFollowerUserIds($validated['follower_user_ids'], $user, $targetInboxId);
             $currentFollowerIds = $ticket->followers()
                 ->pluck('users.id')
                 ->map(fn (int|string $id) => (int) $id)
@@ -903,6 +1172,21 @@ class TicketApiController extends Controller
                     'old' => implode(', ', $currentFollowerIds),
                     'new' => implode(', ', $newFollowerIds),
                 ];
+                $knowledgeChanged = true;
+            }
+        }
+
+        if ($inboxChanged && ! array_key_exists('follower_user_ids', $validated)) {
+            [$newFollowerIds, $removedFollowerIds] = $this->filterFollowerIdsForInbox($ticket, $targetInboxId);
+
+            if ($removedFollowerIds !== []) {
+                $followerSyncIds = $newFollowerIds;
+                $changes[] = [
+                    'field' => 'follower_user_ids',
+                    'old' => implode(', ', $ticket->followers()->pluck('users.id')->all()),
+                    'new' => implode(', ', $newFollowerIds),
+                ];
+                $knowledgeChanged = true;
             }
         }
 
@@ -941,6 +1225,12 @@ class TicketApiController extends Controller
             }
         });
 
+        $ticket->refresh();
+
+        if ($knowledgeChanged) {
+            $this->notificationService->notifyKnowledgeUpdated($ticket);
+        }
+
         return response()->json([
             'message' => 'Metadata updated.',
             'data' => [
@@ -959,15 +1249,20 @@ class TicketApiController extends Controller
                 return;
             }
 
-            $inboxIds = $user->accessibleInboxes()->pluck('inboxes.id');
+            $inboxIds = $user->accessibleInboxes()
+                ->pluck('inboxes.id')
+                ->map(fn (mixed $id): int => (int) $id)
+                ->all();
 
-            if ($inboxIds->isEmpty()) {
-                $query->whereRaw('1 = 0');
+            $query->where(function (Builder $visibilityQuery) use ($user, $inboxIds): void {
+                if ($inboxIds !== []) {
+                    $visibilityQuery->whereIn('inbox_id', $inboxIds);
+                    $visibilityQuery->orWhere('created_by_user_id', $user->id);
+                    return;
+                }
 
-                return;
-            }
-
-            $query->whereIn('inbox_id', $inboxIds);
+                $visibilityQuery->where('created_by_user_id', $user->id);
+            });
 
             return;
         }
@@ -1102,6 +1397,34 @@ class TicketApiController extends Controller
     }
 
     /**
+     * Determine whether user must create through Inbox Geral.
+     */
+    private function mustUseTriageInbox(User $user): bool
+    {
+        return $user->isClient();
+    }
+
+    /**
+     * Resolve active Inbox Geral used for triage.
+     */
+    private function triageInbox(): ?Inbox
+    {
+        $bySlug = Inbox::query()
+            ->where('is_active', true)
+            ->whereRaw('LOWER(slug) = ?', ['geral'])
+            ->first();
+
+        if ($bySlug) {
+            return $bySlug;
+        }
+
+        return Inbox::query()
+            ->where('is_active', true)
+            ->whereRaw('LOWER(name) = ?', ['geral'])
+            ->first();
+    }
+
+    /**
      * Get inboxes available to user.
      */
     private function inboxesForUser(User $user)
@@ -1132,7 +1455,7 @@ class TicketApiController extends Controller
     /**
      * Get follower candidates available for the current user.
      */
-    private function followerCandidatesForUser(User $user)
+    private function followerCandidatesForUser(User $user, ?int $inboxId = null)
     {
         $query = User::query()
             ->where('is_active', true);
@@ -1142,6 +1465,44 @@ class TicketApiController extends Controller
                 $builder
                     ->where('role', 'operator')
                     ->orWhereKey($user->id);
+            });
+        } elseif ($user->isOperator() && ! $user->isAdmin()) {
+            $allowedInboxIds = $user->accessibleInboxes()->pluck('inboxes.id')->map(fn (int|string $id) => (int) $id)->all();
+            if ($allowedInboxIds === []) {
+                return collect();
+            }
+
+            if ($inboxId !== null) {
+                if (! in_array((int) $inboxId, $allowedInboxIds, true)) {
+                    return collect();
+                }
+
+                $allowedInboxIds = [(int) $inboxId];
+            }
+
+            $query->where(function (Builder $scope) use ($allowedInboxIds): void {
+                $scope->where(function (Builder $operators) use ($allowedInboxIds): void {
+                    $operators->where('role', 'operator')
+                        ->whereHas('accessibleInboxes', fn (Builder $inboxes) => $inboxes->whereIn('inboxes.id', $allowedInboxIds));
+                })->orWhere(function (Builder $clients) use ($allowedInboxIds): void {
+                    $clients->where('role', 'client')
+                        ->where(function (Builder $linked) use ($allowedInboxIds): void {
+                            $linked->whereHas('createdTickets', fn (Builder $tickets) => $tickets->whereIn('inbox_id', $allowedInboxIds))
+                                ->orWhereHas('contacts.entities.tickets', fn (Builder $tickets) => $tickets->whereIn('inbox_id', $allowedInboxIds));
+                        });
+                });
+            });
+        }
+
+        if ($inboxId !== null) {
+            $query->where(function (Builder $scope) use ($inboxId): void {
+                $scope->where(function (Builder $operators) use ($inboxId): void {
+                    $operators->where('role', 'operator')
+                        ->where(function (Builder $operatorScope) use ($inboxId): void {
+                            $operatorScope->where('is_admin', true)
+                                ->orWhereHas('accessibleInboxes', fn (Builder $inboxes) => $inboxes->where('inboxes.id', $inboxId));
+                        });
+                })->orWhere('role', 'client');
             });
         }
 
@@ -1231,7 +1592,7 @@ class TicketApiController extends Controller
      * @param  array<int, mixed>|null  $rawIds
      * @return list<int>
      */
-    private function parseFollowerUserIds(?array $rawIds, User $actor): array
+    private function parseFollowerUserIds(?array $rawIds, User $actor, ?int $inboxId = null): array
     {
         $ids = collect($rawIds ?? [])
             ->filter(fn (mixed $id) => is_numeric($id))
@@ -1244,7 +1605,7 @@ class TicketApiController extends Controller
             return [];
         }
 
-        $allowedIds = $this->followerCandidatesForUser($actor)
+        $allowedIds = $this->followerCandidatesForUser($actor, $inboxId)
             ->pluck('id')
             ->map(fn (int|string $id) => (int) $id);
         $invalidId = $ids->first(fn (int $id) => ! $allowedIds->contains($id));
@@ -1253,6 +1614,24 @@ class TicketApiController extends Controller
             throw ValidationException::withMessages([
                 'follower_user_ids' => "Invalid follower user: {$invalidId}",
             ]);
+        }
+
+        if ($inboxId !== null) {
+            $invalidOperatorIds = User::query()
+                ->whereIn('id', $ids->all())
+                ->where('role', 'operator')
+                ->where('is_admin', false)
+                ->whereDoesntHave('accessibleInboxes', fn (Builder $query) => $query->whereKey($inboxId))
+                ->pluck('id')
+                ->map(fn (int|string $id) => (int) $id)
+                ->values()
+                ->all();
+
+            if ($invalidOperatorIds !== []) {
+                throw ValidationException::withMessages([
+                    'follower_user_ids' => 'Invalid follower operator for inbox: '.implode(', ', $invalidOperatorIds),
+                ]);
+            }
         }
 
         $activeIds = User::query()
@@ -1265,6 +1644,80 @@ class TicketApiController extends Controller
 
         return $ids
             ->filter(fn (int $id) => isset($activeLookup[$id]))
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Remove follower operators without access to target inbox.
+     *
+     * @return array{0: list<int>, 1: list<int>}
+     */
+    private function filterFollowerIdsForInbox(Ticket $ticket, int $inboxId): array
+    {
+        $currentFollowerIds = $ticket->followers()
+            ->pluck('users.id')
+            ->map(fn (int|string $id) => (int) $id)
+            ->values();
+
+        if ($currentFollowerIds->isEmpty()) {
+            return [[], []];
+        }
+
+        $invalidOperatorIds = User::query()
+            ->whereIn('id', $currentFollowerIds->all())
+            ->where('role', 'operator')
+            ->where('is_admin', false)
+            ->whereDoesntHave('accessibleInboxes', fn (Builder $query) => $query->whereKey($inboxId))
+            ->pluck('id')
+            ->map(fn (int|string $id) => (int) $id)
+            ->values();
+
+        if ($invalidOperatorIds->isEmpty()) {
+            return [$currentFollowerIds->all(), []];
+        }
+
+        $filteredFollowerIds = $currentFollowerIds
+            ->reject(fn (int $id) => $invalidOperatorIds->contains($id))
+            ->values()
+            ->all();
+
+        return [$filteredFollowerIds, $invalidOperatorIds->all()];
+    }
+
+    /**
+     * Determine inbox ids where the candidate is relevant as follower.
+     *
+     * @return list<int>
+     */
+    private function candidateInboxIdsForFollower(User $follower): array
+    {
+        if ($follower->isOperator()) {
+            return $follower->accessibleInboxes()
+                ->pluck('inboxes.id')
+                ->map(fn (int|string $id) => (int) $id)
+                ->unique()
+                ->values()
+                ->all();
+        }
+
+        $createdInboxIds = Ticket::query()
+            ->where('created_by_user_id', $follower->id)
+            ->pluck('inbox_id')
+            ->map(fn (int|string $id) => (int) $id);
+
+        $entityInboxIds = Ticket::query()
+            ->select('tickets.inbox_id')
+            ->join('contact_entity', 'contact_entity.entity_id', '=', 'tickets.entity_id')
+            ->join('contacts', 'contacts.id', '=', 'contact_entity.contact_id')
+            ->where('contacts.user_id', $follower->id)
+            ->distinct()
+            ->pluck('tickets.inbox_id')
+            ->map(fn (int|string $id) => (int) $id);
+
+        return $createdInboxIds
+            ->merge($entityInboxIds)
+            ->unique()
             ->values()
             ->all();
     }
@@ -1340,9 +1793,9 @@ class TicketApiController extends Controller
             'inbox' => $ticket->inbox ? ['id' => $ticket->inbox->id, 'name' => $ticket->inbox->name] : null,
             'entity' => $ticket->entity ? ['id' => $ticket->entity->id, 'name' => $ticket->entity->name] : null,
             'contact' => $ticket->contact ? ['id' => $ticket->contact->id, 'name' => $ticket->contact->name, 'email' => $ticket->contact->email] : null,
-            'creator_user' => $ticket->creatorUser ? ['id' => $ticket->creatorUser->id, 'name' => $ticket->creatorUser->name] : null,
+            'creator_user' => $this->serializeUserReference($ticket->creatorUser),
             'creator_contact' => $ticket->creatorContact ? ['id' => $ticket->creatorContact->id, 'name' => $ticket->creatorContact->name, 'email' => $ticket->creatorContact->email] : null,
-            'assigned_operator' => $ticket->assignedOperator ? ['id' => $ticket->assignedOperator->id, 'name' => $ticket->assignedOperator->name] : null,
+            'assigned_operator' => $this->serializeUserReference($ticket->assignedOperator),
         ];
     }
 
@@ -1386,6 +1839,8 @@ class TicketApiController extends Controller
                 'name' => $follower->name,
                 'email' => $follower->email,
                 'role' => $follower->role,
+                'avatar_url' => $this->avatarUrlForUser($follower),
+                'inbox_ids' => $this->candidateInboxIdsForFollower($follower),
             ])->values()->all(),
             'created_at' => optional($ticket->created_at)?->toIso8601String(),
             'last_activity_at' => optional($ticket->last_activity_at ?? $ticket->updated_at)?->toIso8601String(),
@@ -1393,8 +1848,8 @@ class TicketApiController extends Controller
             'entity' => $ticket->entity ? ['id' => $ticket->entity->id, 'name' => $ticket->entity->name] : null,
             'contact' => $ticket->contact ? ['id' => $ticket->contact->id, 'name' => $ticket->contact->name, 'email' => $ticket->contact->email] : null,
             'creator_contact' => $ticket->creatorContact ? ['id' => $ticket->creatorContact->id, 'name' => $ticket->creatorContact->name, 'email' => $ticket->creatorContact->email] : null,
-            'creator_user' => $ticket->creatorUser ? ['id' => $ticket->creatorUser->id, 'name' => $ticket->creatorUser->name] : null,
-            'assigned_operator' => $ticket->assignedOperator ? ['id' => $ticket->assignedOperator->id, 'name' => $ticket->assignedOperator->name] : null,
+            'creator_user' => $this->serializeUserReference($ticket->creatorUser),
+            'assigned_operator' => $this->serializeUserReference($ticket->assignedOperator),
             'permissions' => [
                 'can_reply' => $request->user()->can('reply', $ticket),
                 'can_add_internal_note' => $request->user()->isOperator() && $request->user()->can('view', $ticket),
@@ -1408,7 +1863,7 @@ class TicketApiController extends Controller
             'messages' => $ticket->messages->sortByDesc('created_at')->values()->map(fn (TicketMessage $message) => [
                 'id' => $message->id,
                 'author_type' => $message->author_type,
-                'author_user' => $message->authorUser ? ['id' => $message->authorUser->id, 'name' => $message->authorUser->name] : null,
+                'author_user' => $this->serializeUserReference($message->authorUser),
                 'author_contact' => $message->authorContact ? ['id' => $message->authorContact->id, 'name' => $message->authorContact->name] : null,
                 'body' => $message->body,
                 'body_format' => $message->body_format,
@@ -1432,13 +1887,15 @@ class TicketApiController extends Controller
                 'old_value' => $log->old_value,
                 'new_value' => $log->new_value,
                 'actor_type' => $log->actor_type,
-                'actor_user' => $log->actorUser ? ['id' => $log->actorUser->id, 'name' => $log->actorUser->name] : null,
+                'actor_user' => $this->serializeUserReference($log->actorUser),
                 'actor_contact' => $log->actorContact ? ['id' => $log->actorContact->id, 'name' => $log->actorContact->name] : null,
                 'created_at' => optional($log->created_at)?->toIso8601String(),
             ])->all(),
             'operators' => $operators->map(fn (User $operator) => [
                 'id' => $operator->id,
                 'name' => $operator->name,
+                'email' => $operator->email,
+                'avatar_url' => $this->avatarUrlForUser($operator),
             ])->values()->all(),
             'available_inboxes' => $availableInboxes->map(fn (Inbox $inbox) => [
                 'id' => $inbox->id,
@@ -1459,8 +1916,44 @@ class TicketApiController extends Controller
                 'name' => $follower->name,
                 'email' => $follower->email,
                 'role' => $follower->role,
+                'avatar_url' => $this->avatarUrlForUser($follower),
+                'inbox_ids' => $this->candidateInboxIdsForFollower($follower),
             ])->values()->all(),
             'navigation' => $navigation,
+        ];
+    }
+
+    /**
+     * Build a public avatar URL for user payloads.
+     */
+    private function avatarUrlForUser(User $user): string
+    {
+        $avatarPath = trim((string) ($user->avatar_path ?? ''));
+
+        if ($avatarPath !== '') {
+            return url('/storage/'.ltrim($avatarPath, '/'));
+        }
+
+        return url('/images/avatar-placeholder.svg');
+    }
+
+    /**
+     * Serialize compact user reference including avatar.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function serializeUserReference(?User $user): ?array
+    {
+        if (! $user) {
+            return null;
+        }
+
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role' => $user->role,
+            'avatar_url' => $this->avatarUrlForUser($user),
         ];
     }
 
