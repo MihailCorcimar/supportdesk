@@ -1,10 +1,57 @@
-<script setup>
+﻿<script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import api from '../api/client';
+import QuickActionsRail from '../components/QuickActionsRail.vue';
+import QuickMenuPanel from '../components/QuickMenuPanel.vue';
 
 const route = useRoute();
 const router = useRouter();
+
+const COUNTRIES = [
+    { code: 'PT', name: 'Portugal' },
+    { code: 'BR', name: 'Brasil' },
+    { code: 'AO', name: 'Angola' },
+    { code: 'MZ', name: 'Moçambique' },
+    { code: 'CV', name: 'Cabo Verde' },
+    { code: 'ST', name: 'São Tomé e Príncipe' },
+    { code: 'GW', name: 'Guiné-Bissau' },
+    { code: 'TL', name: 'Timor-Leste' },
+    { code: '—', name: '──────────────' },
+    { code: 'ES', name: 'Espanha' },
+    { code: 'FR', name: 'França' },
+    { code: 'DE', name: 'Alemanha' },
+    { code: 'IT', name: 'Itália' },
+    { code: 'GB', name: 'Reino Unido' },
+    { code: 'NL', name: 'Países Baixos' },
+    { code: 'BE', name: 'Bélgica' },
+    { code: 'CH', name: 'Suíça' },
+    { code: 'AT', name: 'Áustria' },
+    { code: 'SE', name: 'Suécia' },
+    { code: 'NO', name: 'Noruega' },
+    { code: 'DK', name: 'Dinamarca' },
+    { code: 'FI', name: 'Finlândia' },
+    { code: 'IE', name: 'Irlanda' },
+    { code: 'GR', name: 'Grécia' },
+    { code: 'PL', name: 'Polónia' },
+    { code: 'CZ', name: 'República Checa' },
+    { code: 'HU', name: 'Hungria' },
+    { code: 'RO', name: 'Roménia' },
+    { code: 'BG', name: 'Bulgária' },
+    { code: 'HR', name: 'Croácia' },
+    { code: 'SK', name: 'Eslováquia' },
+    { code: 'SI', name: 'Eslovénia' },
+    { code: 'EE', name: 'Estónia' },
+    { code: 'LV', name: 'Letónia' },
+    { code: 'LT', name: 'Lituânia' },
+    { code: 'LU', name: 'Luxemburgo' },
+    { code: 'MT', name: 'Malta' },
+    { code: 'CY', name: 'Chipre' },
+    { code: 'US', name: 'Estados Unidos' },
+    { code: 'MX', name: 'México' },
+    { code: 'AR', name: 'Argentina' },
+    { code: 'ZA', name: 'África do Sul' },
+];
 
 const loading = ref(true);
 const error = ref('');
@@ -23,8 +70,22 @@ const notificationTemplates = ref([]);
 const notificationPlaceholders = ref([]);
 const notificationCarouselIndex = ref(0);
 const showEmailStylePanel = ref(false);
+const showEmailPreviewPanel = ref(false);
 const savingNotificationEventKey = ref('');
 const savingEmailStyle = ref(false);
+const notificationQuickActions = computed(() => ([
+    {
+        id: 'email_style',
+        title: 'Aspeto visual do email',
+        active: showEmailStylePanel.value,
+    },
+    {
+        id: 'email_preview',
+        title: 'Pré-visualização',
+        active: showEmailPreviewPanel.value,
+    },
+]));
+const notificationQuickDocked = computed(() => showEmailStylePanel.value || showEmailPreviewPanel.value);
 const emailStyle = reactive({
     brand_name: 'Supportdesk',
     header_background: '#1F4E79',
@@ -43,11 +104,16 @@ const emailStyleDefaults = reactive({
 });
 
 const inboxForm = reactive({ name: '', is_active: true });
+const inboxImageFile = ref(null);
+const inboxImagePreviewUrl = ref('');
 const inboxEditForm = reactive({
     name: '',
     is_active: true,
     operator_ids: [],
+    image_url: '',
 });
+const inboxEditImageFile = ref(null);
+const inboxEditImagePreviewUrl = ref('');
 const entityForm = reactive({
     type: 'external',
     name: '',
@@ -100,11 +166,15 @@ const contactEditForm = reactive({
     internal_notes: '',
     is_active: true,
 });
-const logFilters = reactive({ search: '', action: '', actor_type: '' });
+const logFilters = reactive({ search: '', action: '', actor_type: '', date_from: '', date_to: '' });
+const logsLoading = ref(false);
+const logsMeta = ref(null);
+const logsPage = ref(1);
 
 const editingInboxId = ref(null);
 const editingEntityId = ref(null);
 const editingContactId = ref(null);
+const showInboxCreateModal = ref(false);
 const showInboxEditModal = ref(false);
 const showEntityCreateModal = ref(false);
 const showEntityEditModal = ref(false);
@@ -241,6 +311,14 @@ const tabLabel = {
     notifications: 'Notificações',
     logs: 'Ticket logs',
 };
+const handleNotificationQuickAction = (actionId) => {
+    if (actionId === 'email_style') {
+        showEmailStylePanel.value = !showEmailStylePanel.value;
+    }
+    if (actionId === 'email_preview') {
+        showEmailPreviewPanel.value = !showEmailPreviewPanel.value;
+    }
+};
 const notificationEventLabel = {
     ticket_created: 'Ticket criado',
     ticket_replied: 'Nova resposta',
@@ -264,6 +342,39 @@ const notificationPlaceholderLabelMap = Object.freeze({
     '{cc_emails}': 'Conhecimento',
     '{ticket_url}': 'Link do ticket',
 });
+
+const previewSampleValues = Object.freeze({
+    '{ticket_number}': 'TC-000001',
+    '{subject}': 'Falha na máquina de embalar',
+    '{status}': 'Em tratamento',
+    '{priority}': 'Alta',
+    '{type}': 'Incidente',
+    '{inbox}': 'Suporte Geral',
+    '{entity}': 'ACME Lda.',
+    '{contact}': 'João Silva',
+    '{creator_name}': 'Maria Santos',
+    '{assigned_operator}': 'Pedro Costa',
+    '{author_name}': 'João Silva',
+    '{message_preview}': 'Bom dia, a máquina de embalar da linha 3 parou subitamente sem aviso prévio.',
+    '{cc_emails}': 'gestor@empresa.pt, diretor@empresa.pt',
+    '{ticket_url}': '#',
+});
+
+const resolvePreviewTemplate = (text) =>
+    String(text ?? '')
+        .replace(/\{[a-z_]+\}/gi, (match) => previewSampleValues[match] ?? match)
+        .replace(/\n/g, '<br>');
+
+const previewSubjectHtml = computed(() =>
+    resolvePreviewTemplate(activeNotificationTemplate.value?.subject_template || '')
+);
+const previewTitleText = computed(() =>
+    String(activeNotificationTemplate.value?.title_template || 'Título do email')
+        .replace(/\{[a-z_]+\}/gi, (match) => previewSampleValues[match] ?? match)
+);
+const previewBodyHtml = computed(() =>
+    resolvePreviewTemplate(activeNotificationTemplate.value?.body_template || 'Corpo configurável do email.')
+);
 const draggedNotificationPlaceholder = ref('');
 const activeNotificationDropZone = reactive({ templateKey: '', field: '' });
 const notificationBodyEditorRefs = new Map();
@@ -459,15 +570,40 @@ const loadBaseData = async () => {
     users.value = usersResponse.data.data;
 };
 
-const loadLogs = async () => {
-    const params = { per_page: 50 };
+const loadLogs = async (page = logsPage.value) => {
+    logsLoading.value = true;
 
-    if (logFilters.search.trim()) params.search = logFilters.search.trim();
-    if (logFilters.action.trim()) params.action = logFilters.action.trim();
-    if (logFilters.actor_type.trim()) params.actor_type = logFilters.actor_type.trim();
+    try {
+        const params = { per_page: 30, page };
 
-    const response = await api.get('/ticket-logs', { params });
-    logs.value = response.data.data;
+        if (logFilters.search.trim()) params.search = logFilters.search.trim();
+        if (logFilters.action) params.action = logFilters.action;
+        if (logFilters.actor_type) params.actor_type = logFilters.actor_type;
+        if (logFilters.date_from) params.date_from = logFilters.date_from;
+        if (logFilters.date_to) params.date_to = logFilters.date_to;
+
+        const response = await api.get('/ticket-logs', { params });
+        logs.value = response.data.data;
+        logsMeta.value = response.data.meta || null;
+        logsPage.value = page;
+    } finally {
+        logsLoading.value = false;
+    }
+};
+
+const goToLogsPage = (page) => {
+    if (!logsMeta.value) return;
+    if (page < 1 || page > logsMeta.value.last_page) return;
+    loadLogs(page);
+};
+
+const clearLogFilters = () => {
+    logFilters.search = '';
+    logFilters.action = '';
+    logFilters.actor_type = '';
+    logFilters.date_from = '';
+    logFilters.date_to = '';
+    loadLogs(1);
 };
 
 const applyEmailStyle = (target, source = {}) => {
@@ -565,8 +701,55 @@ const resetInboxEditForm = () => {
     inboxEditForm.name = '';
     inboxEditForm.is_active = true;
     inboxEditForm.operator_ids = [];
+    inboxEditForm.image_url = '';
     inboxOperatorSearch.value = '';
     inboxOperatorDropdownOpen.value = false;
+};
+
+const setInboxImageFile = (event) => {
+    const file = event.target?.files?.[0] || null;
+    inboxImageFile.value = file;
+    if (inboxImagePreviewUrl.value) {
+        URL.revokeObjectURL(inboxImagePreviewUrl.value);
+        inboxImagePreviewUrl.value = '';
+    }
+    if (file) {
+        inboxImagePreviewUrl.value = URL.createObjectURL(file);
+    }
+};
+
+const setInboxEditImageFile = (event) => {
+    const file = event.target?.files?.[0] || null;
+    inboxEditImageFile.value = file;
+    if (inboxEditImagePreviewUrl.value && inboxEditImagePreviewUrl.value.startsWith('blob:')) {
+        URL.revokeObjectURL(inboxEditImagePreviewUrl.value);
+    }
+    inboxEditImagePreviewUrl.value = file
+        ? URL.createObjectURL(file)
+        : (inboxEditForm.image_url || '');
+};
+
+const openInboxCreateModal = () => {
+    resetMessages();
+    inboxForm.name = '';
+    inboxForm.is_active = true;
+    inboxImageFile.value = null;
+    if (inboxImagePreviewUrl.value) {
+        URL.revokeObjectURL(inboxImagePreviewUrl.value);
+    }
+    inboxImagePreviewUrl.value = '';
+    showInboxCreateModal.value = true;
+};
+
+const closeInboxCreateModal = () => {
+    showInboxCreateModal.value = false;
+    inboxForm.name = '';
+    inboxForm.is_active = true;
+    inboxImageFile.value = null;
+    if (inboxImagePreviewUrl.value) {
+        URL.revokeObjectURL(inboxImagePreviewUrl.value);
+    }
+    inboxImagePreviewUrl.value = '';
 };
 
 const openInboxEditModal = (inbox) => {
@@ -576,8 +759,11 @@ const openInboxEditModal = (inbox) => {
     inboxEditForm.name = inbox.name ?? '';
     inboxEditForm.is_active = Boolean(inbox.is_active);
     inboxEditForm.operator_ids = (inbox.operators || []).map((operator) => Number(operator.id));
+    inboxEditForm.image_url = inbox.image_url || '';
     inboxOperatorSearch.value = '';
     inboxOperatorDropdownOpen.value = false;
+    inboxEditImageFile.value = null;
+    inboxEditImagePreviewUrl.value = inbox.image_url || '';
     showInboxEditModal.value = true;
 };
 
@@ -585,6 +771,11 @@ const closeInboxEditModal = () => {
     showInboxEditModal.value = false;
     editingInboxId.value = null;
     resetInboxEditForm();
+    if (inboxEditImagePreviewUrl.value && inboxEditImagePreviewUrl.value.startsWith('blob:')) {
+        URL.revokeObjectURL(inboxEditImagePreviewUrl.value);
+    }
+    inboxEditImagePreviewUrl.value = '';
+    inboxEditImageFile.value = null;
 };
 
 const toggleInboxOperatorDropdown = () => {
@@ -789,10 +980,18 @@ const createInbox = async () => {
     resetMessages();
 
     try {
-        await api.post('/inboxes', inboxForm);
+        const formData = new FormData();
+        formData.append('name', inboxForm.name);
+        formData.append('is_active', inboxForm.is_active ? '1' : '0');
+        if (inboxImageFile.value) {
+            formData.append('image', inboxImageFile.value);
+        }
+
+        await api.post('/inboxes', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+        });
         success.value = 'Inbox criada com sucesso.';
-        inboxForm.name = '';
-        inboxForm.is_active = true;
+        closeInboxCreateModal();
         await loadBaseData();
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao criar inbox.';
@@ -808,17 +1007,41 @@ const goToInboxTickets = async (inboxId) => {
     });
 };
 
+const goToEntityTickets = async (entityId) => {
+    await router.push({
+        name: 'tickets.index',
+        query: {
+            entity_id: String(entityId),
+        },
+    });
+};
+
 const saveInbox = async () => {
     if (!editingInboxId.value) return;
 
     resetMessages();
 
     try {
-        await api.patch(`/inboxes/${editingInboxId.value}`, {
-            name: inboxEditForm.name,
-            is_active: inboxEditForm.is_active,
-            operator_ids: (inboxEditForm.operator_ids || []).map((id) => Number(id)),
-        });
+        const hasImage = Boolean(inboxEditImageFile.value);
+        if (hasImage) {
+            const formData = new FormData();
+            formData.append('name', inboxEditForm.name);
+            formData.append('is_active', inboxEditForm.is_active ? '1' : '0');
+            (inboxEditForm.operator_ids || []).forEach((id) => {
+                formData.append('operator_ids[]', String(Number(id)));
+            });
+            formData.append('image', inboxEditImageFile.value);
+
+            await api.patch(`/inboxes/${editingInboxId.value}`, formData, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+            });
+        } else {
+            await api.patch(`/inboxes/${editingInboxId.value}`, {
+                name: inboxEditForm.name,
+                is_active: inboxEditForm.is_active,
+                operator_ids: (inboxEditForm.operator_ids || []).map((id) => Number(id)),
+            });
+        }
         success.value = 'Inbox atualizada.';
         closeInboxEditModal();
         await loadBaseData();
@@ -1100,7 +1323,7 @@ const refreshLogs = async () => {
     resetMessages();
 
     try {
-        await loadLogs();
+        await loadLogs(logsPage.value);
         success.value = 'Logs atualizados.';
     } catch (exception) {
         error.value = exception?.response?.data?.message || 'Falha ao carregar logs.';
@@ -1464,25 +1687,60 @@ const onNotificationSubjectEditorDrop = (event, template) => {
 };
 
 const applyLogFiltersInstantly = () => {
-    if (logSearchDebounceTimer) {
-        clearTimeout(logSearchDebounceTimer);
-    }
-
-    logSearchDebounceTimer = setTimeout(() => {
-        loadLogs();
-    }, 240);
+    if (logSearchDebounceTimer) clearTimeout(logSearchDebounceTimer);
+    logSearchDebounceTimer = setTimeout(() => loadLogs(1), 260);
 };
 
 const applyLogFiltersImmediately = () => {
-    if (logSearchDebounceTimer) {
-        clearTimeout(logSearchDebounceTimer);
-    }
-    loadLogs();
+    if (logSearchDebounceTimer) clearTimeout(logSearchDebounceTimer);
+    loadLogs(1);
 };
 
 const formatDate = (value) => {
     if (!value) return '-';
     return new Date(value).toLocaleString('pt-PT');
+};
+
+const LOG_STATUS_LABELS = {
+    open: 'Aberto',
+    in_progress: 'Em tratamento',
+    pending: 'Aguardando cliente',
+    closed: 'Fechado',
+    cancelled: 'Cancelado',
+};
+
+const LOG_PRIORITY_LABELS = {
+    low: 'Baixa',
+    medium: 'Média',
+    high: 'Alta',
+    urgent: 'Urgente',
+};
+
+const LOG_TYPE_LABELS = {
+    question: 'Questão',
+    incident: 'Incidente',
+    request: 'Pedido',
+    task: 'Tarefa',
+};
+
+const LOG_FIELD_LABELS = {
+    status: 'Estado',
+    priority: 'Prioridade',
+    type: 'Tipo',
+    assigned_operator_id: 'Atribuído a',
+    follower_user_ids: 'Seguidores',
+    subject: 'Assunto',
+    inbox_id: 'Caixa de entrada',
+};
+
+const formatLogField = (field) => LOG_FIELD_LABELS[field] ?? field;
+
+const formatLogValue = (field, value) => {
+    if (value === null || value === undefined || value === '') return '—';
+    if (field === 'status') return LOG_STATUS_LABELS[value] ?? value;
+    if (field === 'priority') return LOG_PRIORITY_LABELS[value] ?? value;
+    if (field === 'type') return LOG_TYPE_LABELS[value] ?? value;
+    return value;
 };
 
 watch(
@@ -1506,6 +1764,11 @@ watch(
 watch(activeTab, (tab) => {
     const normalized = normalizeTab(tab);
     const current = normalizeTab(typeof route.query.tab === 'string' ? route.query.tab : 'inboxes');
+
+    if (normalized !== 'notifications') {
+        showEmailStylePanel.value = false;
+        showEmailPreviewPanel.value = false;
+    }
 
     if (normalized !== current) {
         router.replace({
@@ -1548,7 +1811,6 @@ onBeforeUnmount(() => {
         <header class="header-row">
             <div>
                 <h1>Configuração operacional</h1>
-                <p class="muted">CRUD de inboxes, entidades, contactos, templates de notificação e consulta dedicada de ticket logs.</p>
             </div>
         </header>
 
@@ -1571,113 +1833,211 @@ onBeforeUnmount(() => {
             <p v-if="loading" class="muted">A carregar...</p>
 
             <template v-if="!loading && activeTab === 'inboxes'">
-                <h2>Inboxes</h2>
-                <form class="form-grid" @submit.prevent="createInbox">
-                    <label>Nome <input v-model="inboxForm.name" required /></label>
-                    <label class="checkbox"><input v-model="inboxForm.is_active" type="checkbox" />Ativa</label>
-                    <button type="submit" class="btn-inline">Criar inbox</button>
-                </form>
+                <div class="entities-header">
+                    <div>
+                        <h2>Inboxes</h2>
+                        <p class="entities-subtitle">
+                            {{ inboxes.length }} {{ inboxes.length === 1 ? 'inbox registada' : 'inboxes registadas' }}
+                        </p>
+                    </div>
+                    <button type="button" class="btn-entity-new" @click="openInboxCreateModal">
+                        <svg viewBox="0 0 20 20" fill="none" width="15" height="15" aria-hidden="true">
+                            <path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+                        </svg>
+                        Nova inbox
+                    </button>
+                </div>
 
-                <section v-if="showInboxEditModal" class="modal-overlay" @click.self="closeInboxEditModal">
-                    <article class="modal-card">
-                        <header class="modal-header">
-                            <div>
-                                <h3>Editar inbox</h3>
-                                <p class="muted">Atualiza os dados da inbox e os operadores associados.</p>
-                            </div>
-                        </header>
+                <!-- ── Create modal ── -->
+                <Teleport to="body">
+                    <section v-if="showInboxCreateModal" class="entity-modal-overlay" @click.self="closeInboxCreateModal">
+                        <article class="entity-modal-card" style="max-width:460px">
+                            <header class="entity-modal-header">
+                                <div class="entity-modal-header-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" width="20" height="20" aria-hidden="true">
+                                        <path d="M4 4h16v16H4z" rx="2" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                                        <path d="M4 9l8 5 8-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                                    </svg>
+                                </div>
+                                <div class="entity-modal-header-text">
+                                    <h3>Nova inbox</h3>
+                                    <p>Caixa de entrada para organizar tickets.</p>
+                                </div>
+                                <button type="button" class="entity-modal-close" aria-label="Fechar" @click="closeInboxCreateModal">
+                                    <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+                                </button>
+                            </header>
 
-                        <form class="form-grid" @submit.prevent="saveInbox">
-                            <label>Nome <input v-model="inboxEditForm.name" required /></label>
-                            <label class="checkbox"><input v-model="inboxEditForm.is_active" type="checkbox" />Ativa</label>
-
-                            <label class="full">Operadores
-                                <div class="entity-ddl inbox-operators-ddl">
-                                    <button type="button" class="entity-ddl-toggle" @click="toggleInboxOperatorDropdown">
-                                        <span class="entity-ddl-value">{{ inboxOperatorDropdownLabel }}</span>
-                                        <span class="entity-ddl-arrow" :class="{ open: inboxOperatorDropdownOpen }" aria-hidden="true">
-                                            <svg viewBox="0 0 20 20" fill="none">
-                                                <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
-                                            </svg>
-                                        </span>
-                                    </button>
-
-                                    <div v-if="inboxOperatorDropdownOpen" class="entity-ddl-panel">
-                                        <div class="entity-ddl-search-wrap">
-                                            <input
-                                                v-model="inboxOperatorSearch"
-                                                class="entity-ddl-search"
-                                                type="search"
-                                                placeholder="Pesquisar operadores..."
-                                            />
+                            <form @submit.prevent="createInbox">
+                                <div class="entity-modal-body">
+                                    <div class="emf-section emf-section-last">
+                                        <div class="emf-grid emf-grid-2">
+                                            <label class="emf-field emf-col-2">
+                                                <span>Nome <em class="emf-required">*</em></span>
+                                                <input v-model="inboxForm.name" required placeholder="Ex: Suporte Geral" />
+                                            </label>
+                                            <label class="emf-field emf-col-2">
+                                                <span>Imagem da inbox</span>
+                                                <input type="file" accept="image/*" @change="setInboxImageFile" />
+                                                <small class="muted">PNG ou JPG até 4MB.</small>
+                                            </label>
+                                            <div v-if="inboxImagePreviewUrl" class="inbox-image-preview">
+                                                <img :src="inboxImagePreviewUrl" alt="Pré-visualização da inbox" />
+                                            </div>
                                         </div>
-
-                                        <div class="entity-ddl-list">
+                                        <label class="emf-toggle-row" style="margin-top:0.65rem">
+                                            <span class="emf-toggle-label">Inbox ativa</span>
                                             <button
-                                                v-for="operator in filteredInboxOperators"
-                                                :key="`inbox-operator-${operator.id}`"
                                                 type="button"
-                                                class="entity-ddl-option"
-                                                :class="{ selected: isInboxOperatorSelected(operator.id) }"
-                                                @click="toggleInboxOperator(operator.id)"
+                                                role="switch"
+                                                :aria-checked="inboxForm.is_active"
+                                                :class="['emf-toggle-btn', { 'emf-toggle-on': inboxForm.is_active }]"
+                                                @click="inboxForm.is_active = !inboxForm.is_active"
                                             >
-                                                <span class="entity-ddl-option-name">
-                                                    {{ operator.name }}
-                                                    <small v-if="!operator.is_active">(inativo)</small>
-                                                </span>
-                                                <span class="entity-ddl-option-check">
-                                                    {{ isInboxOperatorSelected(operator.id) ? '✓' : '' }}
-                                                </span>
+                                                <span class="emf-toggle-thumb" />
                                             </button>
-
-                                            <p v-if="!filteredInboxOperators.length" class="muted">
-                                                Sem operadores para este filtro.
-                                            </p>
-                                        </div>
-
-                                        <div class="entity-ddl-footer">
-                                            <small>{{ selectedInboxOperators.length }} selecionados</small>
-                                            <button type="button" class="ghost mini-btn" @click="clearInboxOperatorsSelection">
-                                                Limpar
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    <div v-if="selectedInboxOperators.length" class="entity-ddl-selected">
-                                        <button
-                                            v-for="operator in selectedInboxOperators"
-                                            :key="`selected-inbox-operator-${operator.id}`"
-                                            type="button"
-                                            class="entity-ddl-tag"
-                                            @click="toggleInboxOperator(operator.id)"
-                                        >
-                                            {{ operator.name }}
-                                        </button>
+                                        </label>
                                     </div>
                                 </div>
-                            </label>
+                                <footer class="entity-modal-footer">
+                                    <button type="button" class="ghost" @click="closeInboxCreateModal">Cancelar</button>
+                                    <button type="submit">Criar inbox</button>
+                                </footer>
+                            </form>
+                        </article>
+                    </section>
+                </Teleport>
 
-                            <div class="full modal-actions">
-                                <button type="submit">Guardar alterações</button>
-                                <button type="button" class="ghost" @click="closeInboxEditModal">Cancelar</button>
-                            </div>
-                        </form>
-                    </article>
-                </section>
+                <!-- ── Edit modal ── -->
+                <Teleport to="body">
+                    <section v-if="showInboxEditModal" class="entity-modal-overlay" @click.self="closeInboxEditModal">
+                        <article class="entity-modal-card" style="max-width:540px">
+                            <header class="entity-modal-header">
+                                <div class="entity-modal-header-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" width="20" height="20" aria-hidden="true">
+                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </div>
+                                <div class="entity-modal-header-text">
+                                    <h3>Editar inbox</h3>
+                                    <p>Atualiza os dados e operadores associados.</p>
+                                </div>
+                                <button type="button" class="entity-modal-close" aria-label="Fechar" @click="closeInboxEditModal">
+                                    <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+                                </button>
+                            </header>
+
+                            <form @submit.prevent="saveInbox">
+                                <div class="entity-modal-body">
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Identificação</p>
+                                        <div class="emf-grid emf-grid-2">
+                                            <label class="emf-field emf-col-2">
+                                                <span>Nome <em class="emf-required">*</em></span>
+                                                <input v-model="inboxEditForm.name" required />
+                                            </label>
+                                            <label class="emf-field emf-col-2">
+                                                <span>Imagem da inbox</span>
+                                                <input type="file" accept="image/*" @change="setInboxEditImageFile" />
+                                                <small class="muted">PNG ou JPG até 4MB.</small>
+                                            </label>
+                                            <div v-if="inboxEditImagePreviewUrl" class="inbox-image-preview">
+                                                <img :src="inboxEditImagePreviewUrl" alt="Imagem atual da inbox" />
+                                            </div>
+                                        </div>
+                                        <label class="emf-toggle-row" style="margin-top:0.65rem">
+                                            <span class="emf-toggle-label">Inbox ativa</span>
+                                            <button
+                                                type="button"
+                                                role="switch"
+                                                :aria-checked="inboxEditForm.is_active"
+                                                :class="['emf-toggle-btn', { 'emf-toggle-on': inboxEditForm.is_active }]"
+                                                @click="inboxEditForm.is_active = !inboxEditForm.is_active"
+                                            >
+                                                <span class="emf-toggle-thumb" />
+                                            </button>
+                                        </label>
+                                    </div>
+
+                                    <div class="emf-section emf-section-last">
+                                        <p class="emf-section-title">Operadores</p>
+                                        <div class="entity-ddl inbox-operators-ddl">
+                                            <button type="button" class="entity-ddl-toggle" @click="toggleInboxOperatorDropdown">
+                                                <span class="entity-ddl-value">{{ inboxOperatorDropdownLabel }}</span>
+                                                <span class="entity-ddl-arrow" :class="{ open: inboxOperatorDropdownOpen }" aria-hidden="true">
+                                                    <svg viewBox="0 0 20 20" fill="none" width="16" height="16">
+                                                        <path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+                                                    </svg>
+                                                </span>
+                                            </button>
+                                            <div v-if="inboxOperatorDropdownOpen" class="entity-ddl-panel">
+                                                <div class="entity-ddl-search-wrap">
+                                                    <input v-model="inboxOperatorSearch" class="entity-ddl-search" type="search" placeholder="Pesquisar operadores..." />
+                                                </div>
+                                                <div class="entity-ddl-list">
+                                                    <button
+                                                        v-for="operator in filteredInboxOperators"
+                                                        :key="`inbox-operator-${operator.id}`"
+                                                        type="button"
+                                                        class="entity-ddl-option"
+                                                        :class="{ selected: isInboxOperatorSelected(operator.id) }"
+                                                        @click="toggleInboxOperator(operator.id)"
+                                                    >
+                                                        <span class="entity-ddl-option-name">{{ operator.name }}<small v-if="!operator.is_active"> (inativo)</small></span>
+                                                        <span class="entity-ddl-option-check">{{ isInboxOperatorSelected(operator.id) ? '✓' : '' }}</span>
+                                                    </button>
+                                                    <p v-if="!filteredInboxOperators.length" class="muted">Sem operadores para este filtro.</p>
+                                                </div>
+                                                <div class="entity-ddl-footer">
+                                                    <small>{{ selectedInboxOperators.length }} selecionados</small>
+                                                    <button type="button" class="ghost mini-btn" @click="clearInboxOperatorsSelection">Limpar</button>
+                                                </div>
+                                            </div>
+                                            <div v-if="selectedInboxOperators.length" class="entity-ddl-selected">
+                                                <button
+                                                    v-for="operator in selectedInboxOperators"
+                                                    :key="`selected-inbox-operator-${operator.id}`"
+                                                    type="button"
+                                                    class="entity-ddl-tag"
+                                                    @click="toggleInboxOperator(operator.id)"
+                                                >{{ operator.name }}</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <footer class="entity-modal-footer">
+                                    <button type="button" class="ghost" @click="closeInboxEditModal">Cancelar</button>
+                                    <button type="submit">Guardar alterações</button>
+                                </footer>
+                            </form>
+                        </article>
+                    </section>
+                </Teleport>
 
                 <table class="table">
                     <thead>
                         <tr>
                             <th>Nome</th>
-                            <th>Ativa</th>
+                            <th>Estado</th>
                             <th>Tickets</th>
                             <th>Operadores</th>
-                            <th>Ações</th>
+                            <th style="text-align:right">Ações</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="item in inboxes" :key="item.id">
-                            <td><span class="cell-text cell-strong" :title="item.name">{{ item.name }}</span></td>
+                        <tr v-for="item in inboxes" :key="item.id" class="entity-row">
+                            <td>
+                                <div class="entity-name-cell">
+                                    <span v-if="item.image_url" class="entity-initials entity-initials-image">
+                                        <img :src="item.image_url" :alt="`Imagem da inbox ${item.name}`" />
+                                    </span>
+                                    <span v-else class="entity-initials type-external">
+                                        {{ (item.name || '?').slice(0, 2).toUpperCase() }}
+                                    </span>
+                                    <span class="entity-name-text">{{ item.name }}</span>
+                                </div>
+                            </td>
                             <td>
                                 <span class="status-chip" :class="item.is_active ? 'active' : 'inactive'">
                                     {{ item.is_active ? 'Ativa' : 'Inativa' }}
@@ -1685,46 +2045,35 @@ onBeforeUnmount(() => {
                             </td>
                             <td>
                                 <button type="button" class="count-pill count-link" @click="goToInboxTickets(item.id)">
+                                    <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                        <path d="M1.5 3A1 1 0 0 1 2.5 2h7A1 1 0 0 1 10.5 3v1.5a1 1 0 0 0 0 2V8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1V6.5a1 1 0 0 0 0-2V3Z" stroke="currentColor" stroke-width="1.1"/>
+                                    </svg>
                                     {{ item.tickets_count }}
                                 </button>
                             </td>
                             <td>
-                                <span class="count-pill">{{ item.operators_count }}</span>
-                                <span class="cell-text notes-text" :title="(item.operators || []).map((operator) => operator.name).join(', ') || '-'">
-                                    {{ (item.operators || []).map((operator) => operator.name).join(', ') || '-' }}
-                                </span>
-                            </td>
-                            <td class="inbox-row-actions">
-                                <div class="inbox-actions-menu">
-                                    <button
-                                        type="button"
-                                        class="ghost entity-actions-trigger"
-                                        aria-label="Abrir ações"
-                                        @click.stop="toggleInboxActionsMenu(item.id)"
-                                    >
-                                        ...
-                                    </button>
-                                    <div
-                                        v-if="inboxActionsMenuOpenId === item.id"
-                                        class="entity-actions-dropdown"
-                                        @click.stop
-                                    >
-                                        <button
-                                            type="button"
-                                            class="entity-menu-item"
-                                            @click="openInboxEditModal(item)"
-                                        >
-                                            Editar
-                                        </button>
-                                        <button
-                                            type="button"
-                                            class="entity-menu-item danger"
-                                            @click="deleteInbox(item)"
-                                        >
-                                            Eliminar
-                                        </button>
-                                    </div>
+                                <div class="inbox-operators-cell">
+                                    <span class="count-pill">{{ item.operators_count }}</span>
+                                    <span class="cell-text notes-text" :title="(item.operators || []).map(o => o.name).join(', ') || '—'">
+                                        {{ (item.operators || []).map(o => o.name).join(', ') || '—' }}
+                                    </span>
                                 </div>
+                            </td>
+                            <td>
+                                <div class="entity-row-actions">
+                                    <button type="button" class="entity-row-btn" title="Editar" @click="openInboxEditModal(item)">
+                                        <svg viewBox="0 0 18 18" fill="none" width="14" height="14"><path d="M10.5 3.5l4 4L5 17H1v-4L10.5 3.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 6l4 4" stroke="currentColor" stroke-width="1.6"/></svg>
+                                    </button>
+                                    <button type="button" class="entity-row-btn entity-row-btn-danger" title="Eliminar" @click="deleteInbox(item)">
+                                        <svg viewBox="0 0 18 18" fill="none" width="14" height="14"><path d="M3 5h12M8 8v5M10 8v5M4 5l1 10h8l1-10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 5V3h4v2" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        <tr v-if="!inboxes.length">
+                            <td colspan="5" class="entity-empty">
+                                <svg viewBox="0 0 24 24" fill="none" width="28" height="28"><rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M2 9l10 6 10-6" stroke="currentColor" stroke-width="1.6"/></svg>
+                                <span>Nenhuma inbox registada.</span>
                             </td>
                         </tr>
                     </tbody>
@@ -1732,172 +2081,363 @@ onBeforeUnmount(() => {
             </template>
 
             <template v-if="!loading && activeTab === 'entities'">
-                <h2>Entidades</h2>
-                <div class="section-actions">
-                    <button type="button" class="btn-inline" @click="openEntityCreateModal">
-                        Criar entidade
+                <!-- ── Entities header ── -->
+                <div class="entities-header">
+                    <div>
+                        <h2>Entidades</h2>
+                        <p class="entities-subtitle">
+                            {{ entities.length }} {{ entities.length === 1 ? 'entidade registada' : 'entidades registadas' }}
+                        </p>
+                    </div>
+                    <button type="button" class="btn-entity-new" @click="openEntityCreateModal">
+                        <svg viewBox="0 0 20 20" fill="none" width="15" height="15" aria-hidden="true">
+                            <path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+                        </svg>
+                        Nova entidade
                     </button>
                 </div>
 
-                <section v-if="showEntityCreateModal" class="modal-overlay" @click.self="closeEntityCreateModal">
-                    <article class="modal-card">
-                        <header class="modal-header">
-                            <div>
-                                <h3>Nova entidade</h3>
-                                <p class="muted">Preenche os dados da entidade para criar.</p>
-                            </div>
-                            <button type="button" class="ghost" @click="closeEntityCreateModal">Fechar</button>
-                        </header>
+                <!-- ── Create modal ── -->
+                <Teleport to="body">
+                    <section v-if="showEntityCreateModal" class="entity-modal-overlay" @click.self="closeEntityCreateModal">
+                        <article class="entity-modal-card">
+                            <header class="entity-modal-header">
+                                <div class="entity-modal-header-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" width="20" height="20" aria-hidden="true">
+                                        <path d="M3 21h18M5 21V7l7-4 7 4v14" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                                        <path d="M9 21v-6h6v6" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                                    </svg>
+                                </div>
+                                <div class="entity-modal-header-text">
+                                    <h3>Nova entidade</h3>
+                                    <p>Preenche os dados da entidade para criar.</p>
+                                </div>
+                                <button type="button" class="entity-modal-close" aria-label="Fechar" @click="closeEntityCreateModal">
+                                    <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+                                </button>
+                            </header>
 
-                        <form class="form-grid" @submit.prevent="createEntity">
-                            <label>Tipo
-                                <select v-model="entityForm.type">
-                                    <option value="external">Externa</option>
-                                    <option value="internal">Interna</option>
-                                </select>
-                            </label>
-                            <label>Nome <input v-model="entityForm.name" required /></label>
-                            <label>NIF <input v-model="entityForm.tax_number" /></label>
-                            <label>Email <input v-model="entityForm.email" type="email" /></label>
-                            <label>Telefone <input v-model="entityForm.phone" /></label>
-                            <label>Telemóvel <input v-model="entityForm.mobile_phone" /></label>
-                            <label>Website <input v-model="entityForm.website" type="url" placeholder="https://..." /></label>
-                            <label>Morada <input v-model="entityForm.address_line" /></label>
-                            <label>Código postal <input v-model="entityForm.postal_code" maxlength="20" /></label>
-                            <label>Cidade <input v-model="entityForm.city" /></label>
-                            <label>País (2 letras) <input v-model="entityForm.country" maxlength="2" /></label>
-                            <label class="checkbox"><input v-model="entityForm.is_active" type="checkbox" />Ativa</label>
-                            <label class="full">Notas internas <textarea v-model="entityForm.notes" rows="2"></textarea></label>
+                            <form @submit.prevent="createEntity">
+                                <div class="entity-modal-body">
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Identificação</p>
+                                        <div class="emf-grid emf-grid-id">
+                                            <label class="emf-field">
+                                                <span>Tipo</span>
+                                                <select v-model="entityForm.type">
+                                                    <option value="external">Externa</option>
+                                                    <option value="internal">Interna</option>
+                                                </select>
+                                            </label>
+                                            <label class="emf-field emf-col-grow">
+                                                <span>Nome <em class="emf-required">*</em></span>
+                                                <input v-model="entityForm.name" required placeholder="Nome da entidade" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>NIF</span>
+                                                <input v-model="entityForm.tax_number" placeholder="000 000 000" />
+                                            </label>
+                                        </div>
+                                    </div>
 
-                            <div class="full modal-actions">
-                                <button type="submit">Criar entidade</button>
-                                <button type="button" class="ghost" @click="closeEntityCreateModal">Cancelar</button>
-                            </div>
-                        </form>
-                    </article>
-                </section>
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Contacto</p>
+                                        <div class="emf-grid emf-grid-2">
+                                            <label class="emf-field emf-col-2">
+                                                <span>Email</span>
+                                                <input v-model="entityForm.email" type="email" placeholder="email@empresa.pt" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Telefone</span>
+                                                <input v-model="entityForm.phone" placeholder="+351 200 000 000" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Telemóvel</span>
+                                                <input v-model="entityForm.mobile_phone" placeholder="+351 900 000 000" />
+                                            </label>
+                                            <label class="emf-field emf-col-2">
+                                                <span>Website</span>
+                                                <input v-model="entityForm.website" type="url" placeholder="https://..." />
+                                            </label>
+                                        </div>
+                                    </div>
 
-                <section v-if="showEntityEditModal" class="modal-overlay" @click.self="closeEntityEditModal">
-                    <article class="modal-card">
-                        <header class="modal-header">
-                            <div>
-                                <h3>Editar entidade</h3>
-                                <p class="muted">Atualiza os campos da entidade selecionada.</p>
-                            </div>
-                        </header>
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Localização</p>
+                                        <div class="emf-grid emf-grid-loc">
+                                            <label class="emf-field emf-col-loc-full">
+                                                <span>Morada</span>
+                                                <input v-model="entityForm.address_line" placeholder="Rua, número, andar..." />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Código postal</span>
+                                                <input v-model="entityForm.postal_code" maxlength="20" placeholder="0000-000" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Cidade</span>
+                                                <input v-model="entityForm.city" placeholder="Lisboa" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>País</span>
+                                                <select v-model="entityForm.country">
+                                                    <option value="">Selecionar país</option>
+                                                    <option
+                                                        v-for="c in COUNTRIES"
+                                                        :key="c.code"
+                                                        :value="c.code"
+                                                        :disabled="c.code === '—'"
+                                                    >{{ c.name }}</option>
+                                                </select>
+                                            </label>
+                                        </div>
+                                    </div>
 
-                        <form class="form-grid" @submit.prevent="saveEntity">
-                            <label>Tipo
-                                <select v-model="entityEditForm.type">
-                                    <option value="external">Externa</option>
-                                    <option value="internal">Interna</option>
-                                </select>
-                            </label>
-                            <label>Nome <input v-model="entityEditForm.name" required /></label>
-                            <label>NIF <input v-model="entityEditForm.tax_number" /></label>
-                            <label>Email <input v-model="entityEditForm.email" type="email" /></label>
-                            <label>Telefone <input v-model="entityEditForm.phone" /></label>
-                            <label>Telemóvel <input v-model="entityEditForm.mobile_phone" /></label>
-                            <label>Website <input v-model="entityEditForm.website" type="url" placeholder="https://..." /></label>
-                            <label>Morada <input v-model="entityEditForm.address_line" /></label>
-                            <label>Código postal <input v-model="entityEditForm.postal_code" maxlength="20" /></label>
-                            <label>Cidade <input v-model="entityEditForm.city" /></label>
-                            <label>País (2 letras) <input v-model="entityEditForm.country" maxlength="2" /></label>
-                            <label class="checkbox"><input v-model="entityEditForm.is_active" type="checkbox" />Ativa</label>
-                            <label class="full">Notas internas <textarea v-model="entityEditForm.notes" rows="2"></textarea></label>
+                                    <div class="emf-section emf-section-last">
+                                        <label class="emf-toggle-row">
+                                            <span class="emf-toggle-label">Entidade ativa</span>
+                                            <button
+                                                type="button"
+                                                role="switch"
+                                                :aria-checked="entityForm.is_active"
+                                                :class="['emf-toggle-btn', { 'emf-toggle-on': entityForm.is_active }]"
+                                                @click="entityForm.is_active = !entityForm.is_active"
+                                            >
+                                                <span class="emf-toggle-thumb" />
+                                            </button>
+                                        </label>
+                                        <label class="emf-field">
+                                            <span>Notas internas</span>
+                                            <textarea v-model="entityForm.notes" rows="3" placeholder="Observações visíveis apenas internamente..."></textarea>
+                                        </label>
+                                    </div>
+                                </div>
 
-                            <div class="full modal-actions">
-                                <button type="submit">Guardar alterações</button>
-                                <button type="button" class="ghost" @click="closeEntityEditModal">Cancelar</button>
-                            </div>
-                        </form>
-                    </article>
-                </section>
+                                <footer class="entity-modal-footer">
+                                    <button type="button" class="ghost" @click="closeEntityCreateModal">Cancelar</button>
+                                    <button type="submit">Criar entidade</button>
+                                </footer>
+                            </form>
+                        </article>
+                    </section>
+                </Teleport>
 
+                <!-- ── Edit modal ── -->
+                <Teleport to="body">
+                    <section v-if="showEntityEditModal" class="entity-modal-overlay" @click.self="closeEntityEditModal">
+                        <article class="entity-modal-card">
+                            <header class="entity-modal-header">
+                                <div class="entity-modal-header-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" width="20" height="20" aria-hidden="true">
+                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </div>
+                                <div class="entity-modal-header-text">
+                                    <h3>Editar entidade</h3>
+                                    <p>Atualiza os campos da entidade selecionada.</p>
+                                </div>
+                                <button type="button" class="entity-modal-close" aria-label="Fechar" @click="closeEntityEditModal">
+                                    <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+                                </button>
+                            </header>
+
+                            <form @submit.prevent="saveEntity">
+                                <div class="entity-modal-body">
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Identificação</p>
+                                        <div class="emf-grid emf-grid-id">
+                                            <label class="emf-field">
+                                                <span>Tipo</span>
+                                                <select v-model="entityEditForm.type">
+                                                    <option value="external">Externa</option>
+                                                    <option value="internal">Interna</option>
+                                                </select>
+                                            </label>
+                                            <label class="emf-field emf-col-grow">
+                                                <span>Nome <em class="emf-required">*</em></span>
+                                                <input v-model="entityEditForm.name" required placeholder="Nome da entidade" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>NIF</span>
+                                                <input v-model="entityEditForm.tax_number" placeholder="000 000 000" />
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Contacto</p>
+                                        <div class="emf-grid emf-grid-2">
+                                            <label class="emf-field emf-col-2">
+                                                <span>Email</span>
+                                                <input v-model="entityEditForm.email" type="email" placeholder="email@empresa.pt" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Telefone</span>
+                                                <input v-model="entityEditForm.phone" placeholder="+351 200 000 000" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Telemóvel</span>
+                                                <input v-model="entityEditForm.mobile_phone" placeholder="+351 900 000 000" />
+                                            </label>
+                                            <label class="emf-field emf-col-2">
+                                                <span>Website</span>
+                                                <input v-model="entityEditForm.website" type="url" placeholder="https://..." />
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Localização</p>
+                                        <div class="emf-grid emf-grid-loc">
+                                            <label class="emf-field emf-col-loc-full">
+                                                <span>Morada</span>
+                                                <input v-model="entityEditForm.address_line" placeholder="Rua, número, andar..." />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Código postal</span>
+                                                <input v-model="entityEditForm.postal_code" maxlength="20" placeholder="0000-000" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Cidade</span>
+                                                <input v-model="entityEditForm.city" placeholder="Lisboa" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>País</span>
+                                                <select v-model="entityEditForm.country">
+                                                    <option value="">Selecionar país</option>
+                                                    <option
+                                                        v-for="c in COUNTRIES"
+                                                        :key="c.code"
+                                                        :value="c.code"
+                                                        :disabled="c.code === '—'"
+                                                    >{{ c.name }}</option>
+                                                </select>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="emf-section emf-section-last">
+                                        <label class="emf-toggle-row">
+                                            <span class="emf-toggle-label">Entidade ativa</span>
+                                            <button
+                                                type="button"
+                                                role="switch"
+                                                :aria-checked="entityEditForm.is_active"
+                                                :class="['emf-toggle-btn', { 'emf-toggle-on': entityEditForm.is_active }]"
+                                                @click="entityEditForm.is_active = !entityEditForm.is_active"
+                                            >
+                                                <span class="emf-toggle-thumb" />
+                                            </button>
+                                        </label>
+                                        <label class="emf-field">
+                                            <span>Notas internas</span>
+                                            <textarea v-model="entityEditForm.notes" rows="3" placeholder="Observações visíveis apenas internamente..."></textarea>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <footer class="entity-modal-footer">
+                                    <button type="button" class="ghost" @click="closeEntityEditModal">Cancelar</button>
+                                    <button type="submit">Guardar alterações</button>
+                                </footer>
+                            </form>
+                        </article>
+                    </section>
+                </Teleport>
+
+                <!-- ── Entity table ── -->
                 <div class="table-scroll">
                     <table class="table entity-table">
                         <thead>
                             <tr>
-                                <th>Nome</th>
-                                <th>Tipo</th>
+                                <th>Entidade</th>
                                 <th>Email</th>
-                                <th>Telefone</th>
-                                <th>Telemóvel</th>
+                                <th>Contacto</th>
                                 <th>NIF</th>
-                                <th>Website</th>
-                                <th>Notas internas</th>
                                 <th>Estado</th>
-                                <th>Contactos</th>
-                                <th>Tickets</th>
-                                <th>Ações</th>
+                                <th style="text-align:center">Contactos</th>
+                                <th style="text-align:center">Tickets</th>
+                                <th style="text-align:right">Ações</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <tr v-for="item in entities" :key="item.id">
+                            <tr v-for="item in entities" :key="item.id" class="entity-row">
                                 <td>
-                                    <span class="cell-text cell-strong" :title="item.name">{{ item.name || '-' }}</span>
+                                    <div class="entity-name-cell">
+                                        <span class="entity-initials" :class="`type-${item.type}`">
+                                            {{ (item.name || '?').slice(0, 2).toUpperCase() }}
+                                        </span>
+                                        <div>
+                                            <span class="entity-name-text">{{ item.name || '—' }}</span>
+                                            <span class="entity-type-chip" :class="`type-${item.type}`">
+                                                {{ item.type === 'internal' ? 'Interna' : 'Externa' }}
+                                            </span>
+                                        </div>
+                                    </div>
                                 </td>
                                 <td>
-                                    <span class="entity-type-chip" :class="`type-${item.type}`">
-                                        {{ item.type === 'internal' ? 'interna' : 'externa' }}
-                                    </span>
+                                    <span class="cell-text" :title="item.email">{{ item.email || '—' }}</span>
                                 </td>
                                 <td>
-                                    <span class="cell-text" :title="item.email">{{ item.email || '-' }}</span>
+                                    <div class="entity-contact-cell">
+                                        <span v-if="item.phone" class="entity-contact-line">{{ item.phone }}</span>
+                                        <span v-if="item.mobile_phone" class="entity-contact-line muted">{{ item.mobile_phone }}</span>
+                                        <span v-if="!item.phone && !item.mobile_phone" class="muted">—</span>
+                                    </div>
                                 </td>
                                 <td>
-                                    <span class="cell-text">{{ item.phone || '-' }}</span>
+                                    <span class="cell-text">{{ item.tax_number || '—' }}</span>
                                 </td>
                                 <td>
-                                    <span class="cell-text">{{ item.mobile_phone || '-' }}</span>
-                                </td>
-                                <td>
-                                    <span class="cell-text">{{ item.tax_number || '-' }}</span>
-                                </td>
-                                <td>
-                                    <span class="cell-text" :title="item.website">{{ item.website || '-' }}</span>
-                                </td>
-                                <td>
-                                    <span class="cell-text notes-text" :title="item.notes">{{ item.notes || '-' }}</span>
-                                </td>
-                                <td>
-                                    <span class="status-chip" :class="item.is_active ? 'active' : 'inactive'">
+                                    <span class="status-chip status-chip-dot" :class="item.is_active ? 'active' : 'inactive'">
+                                        <span class="status-dot" aria-hidden="true"></span>
                                         {{ item.is_active ? 'Ativa' : 'Inativa' }}
                                     </span>
                                 </td>
-                                <td><span class="count-pill">{{ item.contacts_count }}</span></td>
-                                <td><span class="count-pill">{{ item.tickets_count }}</span></td>
-                                <td class="row-actions">
-                                    <div class="entity-actions-menu">
+                                <td style="text-align:center">
+                                    <span class="count-pill">{{ item.contacts_count }}</span>
+                                </td>
+                                <td style="text-align:center">
+                                    <button type="button" class="count-pill count-link" @click="goToEntityTickets(item.id)">
+                                        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                            <path d="M1.5 3A1 1 0 0 1 2.5 2h7A1 1 0 0 1 10.5 3v1.5a1 1 0 0 0 0 2V8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1V6.5a1 1 0 0 0 0-2V3Z" stroke="currentColor" stroke-width="1.1"/>
+                                        </svg>
+                                        {{ item.tickets_count }}
+                                    </button>
+                                </td>
+                                <td>
+                                    <div class="entity-row-actions">
                                         <button
                                             type="button"
-                                            class="ghost entity-actions-trigger"
-                                            aria-label="Abrir ações"
-                                            @click.stop="toggleEntityActionsMenu(item.id)"
+                                            class="entity-row-btn"
+                                            title="Editar"
+                                            aria-label="Editar entidade"
+                                            @click="openEntityEditModal(item)"
                                         >
-                                            ...
+                                            <svg viewBox="0 0 18 18" fill="none" width="14" height="14" aria-hidden="true">
+                                                <path d="M10.5 3.5l4 4L5 17H1v-4L10.5 3.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                                                <path d="M8 6l4 4" stroke="currentColor" stroke-width="1.6"/>
+                                            </svg>
                                         </button>
-                                        <div
-                                            v-if="entityActionsMenuOpenId === item.id"
-                                            class="entity-actions-dropdown"
-                                            @click.stop
+                                        <button
+                                            type="button"
+                                            class="entity-row-btn entity-row-btn-danger"
+                                            title="Eliminar"
+                                            aria-label="Eliminar entidade"
+                                            @click="deleteEntity(item)"
                                         >
-                                            <button
-                                                type="button"
-                                                class="entity-menu-item"
-                                                @click="openEntityEditModal(item)"
-                                            >
-                                                Editar
-                                            </button>
-                                            <button
-                                                type="button"
-                                                class="entity-menu-item danger"
-                                                @click="deleteEntity(item)"
-                                            >
-                                                Eliminar
-                                            </button>
-                                        </div>
+                                            <svg viewBox="0 0 18 18" fill="none" width="14" height="14" aria-hidden="true">
+                                                <path d="M3 5h12M8 8v5M10 8v5M4 5l1 10h8l1-10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                                                <path d="M7 5V3h4v2" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                                            </svg>
+                                        </button>
                                     </div>
+                                </td>
+                            </tr>
+                            <tr v-if="!entities.length">
+                                <td colspan="8" class="entity-empty">
+                                    <svg viewBox="0 0 24 24" fill="none" width="28" height="28" aria-hidden="true"><path d="M3 21h18M5 21V7l7-4 7 4v14" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 21v-6h6v6" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+                                    <span>Nenhuma entidade registada.</span>
                                 </td>
                             </tr>
                         </tbody>
@@ -1906,281 +2446,310 @@ onBeforeUnmount(() => {
             </template>
 
             <template v-if="!loading && activeTab === 'contacts'">
-                <h2>Contactos</h2>
-                <div class="section-actions">
-                    <button type="button" class="btn-inline" @click="openContactCreateModal">
-                        Criar contacto
+                <div class="entities-header">
+                    <div>
+                        <h2>Contactos</h2>
+                        <p class="entities-subtitle">
+                            {{ contacts.length }} {{ contacts.length === 1 ? 'contacto registado' : 'contactos registados' }}
+                        </p>
+                    </div>
+                    <button type="button" class="btn-entity-new" @click="openContactCreateModal">
+                        <svg viewBox="0 0 20 20" fill="none" width="15" height="15" aria-hidden="true">
+                            <path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+                        </svg>
+                        Novo contacto
                     </button>
                 </div>
 
-                <section v-if="showContactCreateModal" class="modal-overlay" @click.self="closeContactCreateModal">
-                    <article class="modal-card">
-                        <header class="modal-header">
-                            <div>
-                                <h3>Novo contacto</h3>
-                                <p class="muted">Preenche os dados do contacto para criar.</p>
-                            </div>
-                            <button type="button" class="ghost" @click="closeContactCreateModal">Fechar</button>
-                        </header>
+                <!-- ── Create modal ── -->
+                <Teleport to="body">
+                    <section v-if="showContactCreateModal" class="entity-modal-overlay" @click.self="closeContactCreateModal">
+                        <article class="entity-modal-card">
+                            <header class="entity-modal-header">
+                                <div class="entity-modal-header-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" width="20" height="20" aria-hidden="true">
+                                        <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.8"/>
+                                        <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                                    </svg>
+                                </div>
+                                <div class="entity-modal-header-text">
+                                    <h3>Novo contacto</h3>
+                                    <p>Preenche os dados do contacto para criar.</p>
+                                </div>
+                                <button type="button" class="entity-modal-close" aria-label="Fechar" @click="closeContactCreateModal">
+                                    <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+                                </button>
+                            </header>
 
-                        <form class="form-grid" @submit.prevent="createContact">
-                            <label class="full">Entidades relacionadas
-                                <div class="entity-ddl">
-                                    <button type="button" class="entity-ddl-toggle" @click.stop="toggleContactEntityDropdown">
-                                        <span class="entity-ddl-value">{{ contactEntityDropdownLabel }}</span>
-                                        <span class="entity-ddl-arrow" :class="{ open: contactEntityDropdownOpen }">
-                                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                                                <path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                                            </svg>
-                                        </span>
-                                    </button>
-
-                                    <div v-if="contactEntityDropdownOpen" class="entity-ddl-panel">
-                                        <div class="entity-ddl-search-wrap">
-                                            <input
-                                                v-model="contactEntitySearch"
-                                                class="entity-ddl-search"
-                                                type="search"
-                                                placeholder="Pesquisar entidade por nome ou NIF..."
-                                            />
-                                        </div>
-
-                                        <div class="entity-ddl-list" role="listbox" aria-multiselectable="true">
-                                            <button
-                                                v-for="entity in filteredEntitiesForContact"
-                                                :key="`new-contact-entity-${entity.id}`"
-                                                type="button"
-                                                class="entity-ddl-option"
-                                                :class="{ selected: isContactEntitySelected(entity.id) }"
-                                                @click="toggleContactEntity(contactForm, entity.id)"
-                                            >
-                                                <span class="entity-ddl-option-name">{{ entity.name }}</span>
-                                                <span class="entity-ddl-option-check">
-                                                    {{ isContactEntitySelected(entity.id) ? '✓' : '' }}
-                                                </span>
-                                            </button>
-
-                                            <p v-if="!filteredEntitiesForContact.length" class="muted">
-                                                Sem entidades para este filtro.
-                                            </p>
-                                        </div>
-
-                                        <div class="entity-ddl-footer">
-                                            <small>{{ selectedContactEntities.length }} selecionadas</small>
-                                            <button type="button" class="ghost mini-btn" @click="clearContactEntitySelection">
-                                                Limpar
-                                            </button>
+                            <form @submit.prevent="createContact">
+                                <div class="entity-modal-body">
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Identificação</p>
+                                        <div class="emf-grid emf-grid-2">
+                                            <label class="emf-field emf-col-2">
+                                                <span>Nome <em class="emf-required">*</em></span>
+                                                <input v-model="contactForm.name" required placeholder="Nome completo" />
+                                            </label>
+                                            <label class="emf-field emf-col-2">
+                                                <span>Email <em class="emf-required">*</em></span>
+                                                <input v-model="contactForm.email" type="email" required placeholder="email@empresa.pt" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Telefone</span>
+                                                <input v-model="contactForm.phone" placeholder="+351 200 000 000" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Telemóvel</span>
+                                                <input v-model="contactForm.mobile_phone" placeholder="+351 900 000 000" />
+                                            </label>
                                         </div>
                                     </div>
-                                    <div v-if="selectedContactEntities.length" class="entity-ddl-selected">
-                                        <button
-                                            v-for="entity in selectedContactEntities"
-                                            :key="`selected-entity-${entity.id}`"
-                                            type="button"
-                                            class="entity-ddl-tag"
-                                            @click="toggleContactEntity(contactForm, entity.id)"
-                                        >
-                                            {{ entity.name }}
-                                        </button>
+
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Função & Associação</p>
+                                        <div class="emf-grid emf-grid-2">
+                                            <label class="emf-field">
+                                                <span>Função</span>
+                                                <select v-model="contactForm.function_id">
+                                                    <option value="">Sem função</option>
+                                                    <option v-for="option in contactFunctions" :key="option.id" :value="String(option.id)">{{ option.name }}</option>
+                                                </select>
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Utilizador (opcional)</span>
+                                                <select v-model="contactForm.user_id" @change="syncContactFormFromSelectedUser">
+                                                    <option value="">Sem associação</option>
+                                                    <option v-for="user in availableClientUsers" :key="user.id" :value="String(user.id)">{{ user.name }} ({{ user.email }})</option>
+                                                </select>
+                                            </label>
+                                            <label class="emf-field emf-col-2">
+                                                <span>Entidades relacionadas</span>
+                                                <div class="entity-ddl">
+                                                    <button type="button" class="entity-ddl-toggle" @click.stop="toggleContactEntityDropdown">
+                                                        <span class="entity-ddl-value">{{ contactEntityDropdownLabel }}</span>
+                                                        <span class="entity-ddl-arrow" :class="{ open: contactEntityDropdownOpen }">
+                                                            <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></svg>
+                                                        </span>
+                                                    </button>
+                                                    <div v-if="contactEntityDropdownOpen" class="entity-ddl-panel">
+                                                        <div class="entity-ddl-search-wrap">
+                                                            <input v-model="contactEntitySearch" class="entity-ddl-search" type="search" placeholder="Pesquisar entidade..." />
+                                                        </div>
+                                                        <div class="entity-ddl-list" role="listbox" aria-multiselectable="true">
+                                                            <button v-for="entity in filteredEntitiesForContact" :key="`new-contact-entity-${entity.id}`" type="button" class="entity-ddl-option" :class="{ selected: isContactEntitySelected(entity.id) }" @click="toggleContactEntity(contactForm, entity.id)">
+                                                                <span class="entity-ddl-option-name">{{ entity.name }}</span>
+                                                                <span class="entity-ddl-option-check">{{ isContactEntitySelected(entity.id) ? '✓' : '' }}</span>
+                                                            </button>
+                                                            <p v-if="!filteredEntitiesForContact.length" class="muted">Sem entidades para este filtro.</p>
+                                                        </div>
+                                                        <div class="entity-ddl-footer">
+                                                            <small>{{ selectedContactEntities.length }} selecionadas</small>
+                                                            <button type="button" class="ghost mini-btn" @click="clearContactEntitySelection">Limpar</button>
+                                                        </div>
+                                                    </div>
+                                                    <div v-if="selectedContactEntities.length" class="entity-ddl-selected">
+                                                        <button v-for="entity in selectedContactEntities" :key="`selected-entity-${entity.id}`" type="button" class="entity-ddl-tag" @click="toggleContactEntity(contactForm, entity.id)">{{ entity.name }}</button>
+                                                    </div>
+                                                </div>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="emf-section emf-section-last">
+                                        <label class="emf-toggle-row">
+                                            <span class="emf-toggle-label">Contacto ativo</span>
+                                            <button type="button" role="switch" :aria-checked="contactForm.is_active" :class="['emf-toggle-btn', { 'emf-toggle-on': contactForm.is_active }]" @click="contactForm.is_active = !contactForm.is_active">
+                                                <span class="emf-toggle-thumb" />
+                                            </button>
+                                        </label>
+                                        <label class="emf-field">
+                                            <span>Notas internas</span>
+                                            <textarea v-model="contactForm.internal_notes" rows="3" placeholder="Observações visíveis apenas internamente..."></textarea>
+                                        </label>
                                     </div>
                                 </div>
-                            </label>
-                            <label>Utilizador (opcional)
-                                <select v-model="contactForm.user_id" @change="syncContactFormFromSelectedUser">
-                                    <option value="">Sem associação</option>
-                                    <option v-for="user in availableClientUsers" :key="user.id" :value="String(user.id)">
-                                        {{ user.name }} ({{ user.email }})
-                                    </option>
-                                </select>
-                            </label>
-                            <label>Função
-                                <select v-model="contactForm.function_id">
-                                    <option value="">Sem função</option>
-                                    <option v-for="option in contactFunctions" :key="option.id" :value="String(option.id)">
-                                        {{ option.name }}
-                                    </option>
-                                </select>
-                            </label>
-                            <label>Nome <input v-model="contactForm.name" required /></label>
-                            <label>Email <input v-model="contactForm.email" type="email" required /></label>
-                            <label>Telefone <input v-model="contactForm.phone" /></label>
-                            <label>Telemóvel <input v-model="contactForm.mobile_phone" /></label>
-                            <label class="full">Notas internas <textarea v-model="contactForm.internal_notes" rows="2"></textarea></label>
-                            <label class="checkbox"><input v-model="contactForm.is_active" type="checkbox" />Ativo</label>
+                                <footer class="entity-modal-footer">
+                                    <button type="button" class="ghost" @click="closeContactCreateModal">Cancelar</button>
+                                    <button type="submit">Criar contacto</button>
+                                </footer>
+                            </form>
+                        </article>
+                    </section>
+                </Teleport>
 
-                            <div class="full modal-actions">
-                                <button type="submit">Criar contacto</button>
-                                <button type="button" class="ghost" @click="closeContactCreateModal">Cancelar</button>
-                            </div>
-                        </form>
-                    </article>
-                </section>
+                <!-- ── Edit modal ── -->
+                <Teleport to="body">
+                    <section v-if="showContactEditModal" class="entity-modal-overlay" @click.self="closeContactEditModal">
+                        <article class="entity-modal-card">
+                            <header class="entity-modal-header">
+                                <div class="entity-modal-header-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" width="20" height="20" aria-hidden="true">
+                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </div>
+                                <div class="entity-modal-header-text">
+                                    <h3>Editar contacto</h3>
+                                    <p>Atualiza os dados do contacto selecionado.</p>
+                                </div>
+                                <button type="button" class="entity-modal-close" aria-label="Fechar" @click="closeContactEditModal">
+                                    <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+                                </button>
+                            </header>
 
-                <section v-if="showContactEditModal" class="modal-overlay" @click.self="closeContactEditModal">
-                    <article class="modal-card">
-                        <header class="modal-header">
-                            <div>
-                                <h3>Editar contacto</h3>
-                                <p class="muted">Atualiza os dados do contacto selecionado.</p>
-                            </div>
-                        </header>
-
-                        <form class="form-grid" @submit.prevent="saveContact">
-                            <label class="full">Entidades relacionadas
-                                <div class="entity-ddl">
-                                    <button type="button" class="entity-ddl-toggle" @click.stop="toggleContactEditEntityDropdown">
-                                        <span class="entity-ddl-value">{{ contactEditEntityDropdownLabel }}</span>
-                                        <span class="entity-ddl-arrow" :class="{ open: contactEditEntityDropdownOpen }">
-                                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                                                <path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                                            </svg>
-                                        </span>
-                                    </button>
-
-                                    <div v-if="contactEditEntityDropdownOpen" class="entity-ddl-panel">
-                                        <div class="entity-ddl-search-wrap">
-                                            <input
-                                                v-model="contactEditEntitySearch"
-                                                class="entity-ddl-search"
-                                                type="search"
-                                                placeholder="Pesquisar entidade por nome ou NIF..."
-                                            />
-                                        </div>
-
-                                        <div class="entity-ddl-list" role="listbox" aria-multiselectable="true">
-                                            <button
-                                                v-for="entity in filteredEntitiesForContactEdit"
-                                                :key="`edit-contact-entity-${entity.id}`"
-                                                type="button"
-                                                class="entity-ddl-option"
-                                                :class="{ selected: isContactEditEntitySelected(entity.id) }"
-                                                @click="toggleContactEntity(contactEditForm, entity.id)"
-                                            >
-                                                <span class="entity-ddl-option-name">{{ entity.name }}</span>
-                                                <span class="entity-ddl-option-check">
-                                                    {{ isContactEditEntitySelected(entity.id) ? '✓' : '' }}
-                                                </span>
-                                            </button>
-
-                                            <p v-if="!filteredEntitiesForContactEdit.length" class="muted">
-                                                Sem entidades para este filtro.
-                                            </p>
-                                        </div>
-
-                                        <div class="entity-ddl-footer">
-                                            <small>{{ selectedContactEditEntities.length }} selecionadas</small>
-                                            <button type="button" class="ghost mini-btn" @click="clearContactEditEntitySelection">
-                                                Limpar
-                                            </button>
+                            <form @submit.prevent="saveContact">
+                                <div class="entity-modal-body">
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Identificação</p>
+                                        <div class="emf-grid emf-grid-2">
+                                            <label class="emf-field emf-col-2">
+                                                <span>Nome <em class="emf-required">*</em></span>
+                                                <input v-model="contactEditForm.name" required placeholder="Nome completo" />
+                                            </label>
+                                            <label class="emf-field emf-col-2">
+                                                <span>Email <em class="emf-required">*</em></span>
+                                                <input v-model="contactEditForm.email" type="email" required placeholder="email@empresa.pt" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Telefone</span>
+                                                <input v-model="contactEditForm.phone" placeholder="+351 200 000 000" />
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Telemóvel</span>
+                                                <input v-model="contactEditForm.mobile_phone" placeholder="+351 900 000 000" />
+                                            </label>
                                         </div>
                                     </div>
-                                    <div v-if="selectedContactEditEntities.length" class="entity-ddl-selected">
-                                        <button
-                                            v-for="entity in selectedContactEditEntities"
-                                            :key="`selected-edit-entity-${entity.id}`"
-                                            type="button"
-                                            class="entity-ddl-tag"
-                                            @click="toggleContactEntity(contactEditForm, entity.id)"
-                                        >
-                                            {{ entity.name }}
-                                        </button>
+
+                                    <div class="emf-section">
+                                        <p class="emf-section-title">Função & Associação</p>
+                                        <div class="emf-grid emf-grid-2">
+                                            <label class="emf-field">
+                                                <span>Função</span>
+                                                <select v-model="contactEditForm.function_id">
+                                                    <option value="">Sem função</option>
+                                                    <option v-for="option in contactFunctions" :key="`edit-contact-function-${option.id}`" :value="String(option.id)">{{ option.name }}</option>
+                                                </select>
+                                            </label>
+                                            <label class="emf-field">
+                                                <span>Utilizador (opcional)</span>
+                                                <select v-model="contactEditForm.user_id" @change="syncContactEditFormFromSelectedUser">
+                                                    <option value="">Sem associação</option>
+                                                    <option v-for="user in userOptions" :key="`edit-contact-user-${user.id}`" :value="String(user.id)">{{ user.name }} ({{ user.email }})</option>
+                                                </select>
+                                            </label>
+                                            <label class="emf-field emf-col-2">
+                                                <span>Entidades relacionadas</span>
+                                                <div class="entity-ddl">
+                                                    <button type="button" class="entity-ddl-toggle" @click.stop="toggleContactEditEntityDropdown">
+                                                        <span class="entity-ddl-value">{{ contactEditEntityDropdownLabel }}</span>
+                                                        <span class="entity-ddl-arrow" :class="{ open: contactEditEntityDropdownOpen }">
+                                                            <svg viewBox="0 0 20 20" fill="none" width="16" height="16"><path d="M5 7.5L10 12.5L15 7.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"/></svg>
+                                                        </span>
+                                                    </button>
+                                                    <div v-if="contactEditEntityDropdownOpen" class="entity-ddl-panel">
+                                                        <div class="entity-ddl-search-wrap">
+                                                            <input v-model="contactEditEntitySearch" class="entity-ddl-search" type="search" placeholder="Pesquisar entidade..." />
+                                                        </div>
+                                                        <div class="entity-ddl-list" role="listbox" aria-multiselectable="true">
+                                                            <button v-for="entity in filteredEntitiesForContactEdit" :key="`edit-contact-entity-${entity.id}`" type="button" class="entity-ddl-option" :class="{ selected: isContactEditEntitySelected(entity.id) }" @click="toggleContactEntity(contactEditForm, entity.id)">
+                                                                <span class="entity-ddl-option-name">{{ entity.name }}</span>
+                                                                <span class="entity-ddl-option-check">{{ isContactEditEntitySelected(entity.id) ? '✓' : '' }}</span>
+                                                            </button>
+                                                            <p v-if="!filteredEntitiesForContactEdit.length" class="muted">Sem entidades para este filtro.</p>
+                                                        </div>
+                                                        <div class="entity-ddl-footer">
+                                                            <small>{{ selectedContactEditEntities.length }} selecionadas</small>
+                                                            <button type="button" class="ghost mini-btn" @click="clearContactEditEntitySelection">Limpar</button>
+                                                        </div>
+                                                    </div>
+                                                    <div v-if="selectedContactEditEntities.length" class="entity-ddl-selected">
+                                                        <button v-for="entity in selectedContactEditEntities" :key="`selected-edit-entity-${entity.id}`" type="button" class="entity-ddl-tag" @click="toggleContactEntity(contactEditForm, entity.id)">{{ entity.name }}</button>
+                                                    </div>
+                                                </div>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="emf-section emf-section-last">
+                                        <label class="emf-toggle-row">
+                                            <span class="emf-toggle-label">Contacto ativo</span>
+                                            <button type="button" role="switch" :aria-checked="contactEditForm.is_active" :class="['emf-toggle-btn', { 'emf-toggle-on': contactEditForm.is_active }]" @click="contactEditForm.is_active = !contactEditForm.is_active">
+                                                <span class="emf-toggle-thumb" />
+                                            </button>
+                                        </label>
+                                        <label class="emf-field">
+                                            <span>Notas internas</span>
+                                            <textarea v-model="contactEditForm.internal_notes" rows="3" placeholder="Observações visíveis apenas internamente..."></textarea>
+                                        </label>
                                     </div>
                                 </div>
-                            </label>
-                            <label>Utilizador (opcional)
-                                <select v-model="contactEditForm.user_id" @change="syncContactEditFormFromSelectedUser">
-                                    <option value="">Sem associação</option>
-                                    <option v-for="user in userOptions" :key="`edit-contact-user-${user.id}`" :value="String(user.id)">
-                                        {{ user.name }} ({{ user.email }})
-                                    </option>
-                                </select>
-                            </label>
-                            <label>Função
-                                <select v-model="contactEditForm.function_id">
-                                    <option value="">Sem função</option>
-                                    <option v-for="option in contactFunctions" :key="`edit-contact-function-${option.id}`" :value="String(option.id)">
-                                        {{ option.name }}
-                                    </option>
-                                </select>
-                            </label>
-                            <label>Nome <input v-model="contactEditForm.name" required /></label>
-                            <label>Email <input v-model="contactEditForm.email" type="email" required /></label>
-                            <label>Telefone <input v-model="contactEditForm.phone" /></label>
-                            <label>Telemóvel <input v-model="contactEditForm.mobile_phone" /></label>
-                            <label class="full">Notas internas <textarea v-model="contactEditForm.internal_notes" rows="2"></textarea></label>
-                            <label class="checkbox"><input v-model="contactEditForm.is_active" type="checkbox" />Ativo</label>
-
-                            <div class="full modal-actions">
-                                <button type="submit">Guardar alterações</button>
-                                <button type="button" class="ghost" @click="closeContactEditModal">Cancelar</button>
-                            </div>
-                        </form>
-                    </article>
-                </section>
+                                <footer class="entity-modal-footer">
+                                    <button type="button" class="ghost" @click="closeContactEditModal">Cancelar</button>
+                                    <button type="submit">Guardar alterações</button>
+                                </footer>
+                            </form>
+                        </article>
+                    </section>
+                </Teleport>
 
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>Nome</th>
+                            <th>Contacto</th>
                             <th>Função</th>
-                            <th>Email</th>
-                            <th>Telefone</th>
-                            <th>Telemóvel</th>
+                            <th>Contacto</th>
                             <th>Entidades</th>
-                            <th>Notas internas</th>
-                            <th>Ativo</th>
-                            <th>Ações</th>
+                            <th>Estado</th>
+                            <th style="text-align:right">Ações</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="item in contacts" :key="item.id">
-                            <td><span class="cell-text cell-strong" :title="item.name">{{ item.name || '-' }}</span></td>
-                            <td><span class="cell-text">{{ item.function?.name || 'Sem função' }}</span></td>
-                            <td><span class="cell-text" :title="item.email">{{ item.email || '-' }}</span></td>
-                            <td><span class="cell-text">{{ item.phone || '-' }}</span></td>
-                            <td><span class="cell-text">{{ item.mobile_phone || '-' }}</span></td>
+                        <tr v-for="item in contacts" :key="item.id" class="entity-row">
                             <td>
-                                <span class="cell-text notes-text" :title="(item.entities || []).map((entity) => entity.name).join(', ') || '-'">
-                                    {{ (item.entities || []).map((entity) => entity.name).join(', ') || '-' }}
+                                <div class="entity-name-cell">
+                                    <span class="entity-initials type-internal">
+                                        {{ (item.name || '?').slice(0, 2).toUpperCase() }}
+                                    </span>
+                                    <div>
+                                        <span class="entity-name-text">{{ item.name || '—' }}</span>
+                                        <span class="cell-text" style="font-size:0.76rem">{{ item.email || '—' }}</span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td><span class="cell-text">{{ item.function?.name || '—' }}</span></td>
+                            <td>
+                                <div class="entity-contact-cell">
+                                    <span v-if="item.phone" class="entity-contact-line">{{ item.phone }}</span>
+                                    <span v-if="item.mobile_phone" class="entity-contact-line muted">{{ item.mobile_phone }}</span>
+                                    <span v-if="!item.phone && !item.mobile_phone" class="muted">—</span>
+                                </div>
+                            </td>
+                            <td>
+                                <span class="cell-text notes-text" :title="(item.entities || []).map(e => e.name).join(', ') || '—'">
+                                    {{ (item.entities || []).map(e => e.name).join(', ') || '—' }}
                                 </span>
                             </td>
-                            <td><span class="cell-text notes-text" :title="item.internal_notes">{{ item.internal_notes || '-' }}</span></td>
                             <td>
                                 <span class="status-chip" :class="item.is_active ? 'active' : 'inactive'">
                                     {{ item.is_active ? 'Ativo' : 'Inativo' }}
                                 </span>
                             </td>
-                            <td class="row-actions">
-                                <div class="contact-actions-menu">
-                                    <button
-                                        type="button"
-                                        class="ghost entity-actions-trigger"
-                                        aria-label="Abrir ações"
-                                        @click.stop="toggleContactActionsMenu(item.id)"
-                                    >
-                                        ...
+                            <td>
+                                <div class="entity-row-actions">
+                                    <button type="button" class="entity-row-btn" title="Editar" @click="openContactEditModal(item)">
+                                        <svg viewBox="0 0 18 18" fill="none" width="14" height="14"><path d="M10.5 3.5l4 4L5 17H1v-4L10.5 3.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 6l4 4" stroke="currentColor" stroke-width="1.6"/></svg>
                                     </button>
-                                    <div
-                                        v-if="contactActionsMenuOpenId === item.id"
-                                        class="entity-actions-dropdown"
-                                        @click.stop
-                                    >
-                                        <button
-                                            type="button"
-                                            class="entity-menu-item"
-                                            @click="openContactEditModal(item)"
-                                        >
-                                            Editar
-                                        </button>
-                                        <button
-                                            type="button"
-                                            class="entity-menu-item danger"
-                                            @click="deleteContact(item)"
-                                        >
-                                            Eliminar
-                                        </button>
-                                    </div>
+                                    <button type="button" class="entity-row-btn entity-row-btn-danger" title="Eliminar" @click="deleteContact(item)">
+                                        <svg viewBox="0 0 18 18" fill="none" width="14" height="14"><path d="M3 5h12M8 8v5M10 8v5M4 5l1 10h8l1-10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 5V3h4v2" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+                                    </button>
                                 </div>
+                            </td>
+                        </tr>
+                        <tr v-if="!contacts.length">
+                            <td colspan="6" class="entity-empty">
+                                <svg viewBox="0 0 24 24" fill="none" width="28" height="28"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.6"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                                <span>Nenhum contacto registado.</span>
                             </td>
                         </tr>
                     </tbody>
@@ -2339,130 +2908,279 @@ onBeforeUnmount(() => {
                         </p>
                     </section>
 
-                    <section class="notification-right-column">
-                        <div class="notification-style-ddl">
-                            <button
-                                type="button"
-                                class="ghost notification-style-toggle-btn"
-                                @click="showEmailStylePanel = !showEmailStylePanel"
-                            >
-                                <span>Aspeto visual do email</span>
-                                <span class="notification-style-toggle-icon">{{ showEmailStylePanel ? '▲' : '▼' }}</span>
-                            </button>
+                </div>
 
-                            <article v-if="showEmailStylePanel" class="notification-template-card notification-style-card compact notification-style-popover">
-                                <form class="form-grid notification-template-form notification-style-form" @submit.prevent="saveEmailStyle">
-                                    <label>
-                                        Nome da marca
-                                        <input v-model="emailStyle.brand_name" maxlength="120" required />
-                                    </label>
-                                    <label>
-                                        Texto do botão
-                                        <input v-model="emailStyle.button_text" maxlength="120" required />
-                                    </label>
-                                    <label>
-                                        Cor de cabeçalho
-                                        <input v-model="emailStyle.header_background" type="color" />
-                                    </label>
-                                    <label>
-                                        Cor de destaque
-                                        <input v-model="emailStyle.accent_color" type="color" />
-                                    </label>
-                                    <label class="full">
-                                        Rodapé
-                                        <input v-model="emailStyle.footer_text" maxlength="300" required />
-                                    </label>
-                                    <div class="full notification-style-actions-row">
-                                        <label class="toggle-switch">
-                                            <input v-model="emailStyle.show_ticket_link" type="checkbox" />
-                                            <span class="toggle-track" aria-hidden="true">
-                                                <span class="toggle-thumb"></span>
-                                            </span>
-                                            <span class="toggle-text">Mostrar botão de acesso ao ticket</span>
-                                        </label>
+                <QuickActionsRail
+                    :actions="notificationQuickActions"
+                    aria-label="Ações rápidas notificações"
+                    desktop-style="floating"
+                    mobile-style="bottom"
+                    :dock="notificationQuickDocked"
+                    dock-offset="min(420px, calc(100vw - 1.2rem))"
+                    @action="handleNotificationQuickAction"
+                >
+                    <template #icon-email_style>
+                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.8" />
+                            <circle cx="8.3" cy="9" r="1.2" fill="currentColor" />
+                            <circle cx="12" cy="7.8" r="1.1" fill="currentColor" />
+                            <circle cx="15.8" cy="9.2" r="1.1" fill="currentColor" />
+                            <circle cx="15.8" cy="14.4" r="1.1" fill="currentColor" />
+                            <path d="M10.8 13.2c.7-.35 1.6.2 1.6.98 0 .52-.42.94-.94.94H10.2a1.8 1.8 0 0 1 0-3.6h1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                        </svg>
+                    </template>
+                    <template #icon-email_preview>
+                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path d="M2.5 12s3.8-6 9.5-6 9.5 6 9.5 6-3.8 6-9.5 6-9.5-6-9.5-6Z" stroke="currentColor" stroke-width="1.6" />
+                            <circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.6" />
+                        </svg>
+                    </template>
+                </QuickActionsRail>
 
-                                        <div class="notification-template-actions">
-                                            <button type="submit" :disabled="savingEmailStyle">
-                                                {{ savingEmailStyle ? 'A guardar...' : 'Guardar aspeto' }}
-                                            </button>
-                                            <button type="button" class="ghost" @click="resetEmailStyle">Repor padrão</button>
-                                        </div>
-                                    </div>
-                                </form>
-                            </article>
-                        </div>
+                <QuickMenuPanel
+                    :open="showEmailStylePanel"
+                    title="Aspeto visual do email"
+                    aria-label="Aspeto visual do email"
+                    @close="showEmailStylePanel = false"
+                >
+                    <div class="notification-style-panel-body">
+                        <form class="form-grid notification-template-form notification-style-form" @submit.prevent="saveEmailStyle">
+                            <label>
+                                Nome da marca
+                                <input v-model="emailStyle.brand_name" maxlength="120" required />
+                            </label>
+                            <label>
+                                Texto do botão
+                                <input v-model="emailStyle.button_text" maxlength="120" required />
+                            </label>
+                            <label>
+                                Cor de cabeçalho
+                                <input v-model="emailStyle.header_background" type="color" />
+                            </label>
+                            <label>
+                                Cor de destaque
+                                <input v-model="emailStyle.accent_color" type="color" />
+                            </label>
+                            <label class="full">
+                                Rodapé
+                                <input v-model="emailStyle.footer_text" maxlength="300" required />
+                            </label>
+                            <div class="full notification-style-actions-row">
+                                <label class="toggle-switch">
+                                    <input v-model="emailStyle.show_ticket_link" type="checkbox" />
+                                    <span class="toggle-track" aria-hidden="true">
+                                        <span class="toggle-thumb"></span>
+                                    </span>
+                                    <span class="toggle-text">Mostrar botão de acesso ao ticket</span>
+                                </label>
 
-                        <article class="notification-template-card notification-preview-card notification-preview-side">
-                            <header class="notification-template-header">
-                                <h3>Pré-visualização</h3>
-                                <small class="muted" v-if="activeNotificationTemplateLabel">{{ activeNotificationTemplateLabel }}</small>
-                            </header>
-                            <div class="email-preview-shell">
-                                <div class="email-preview-header" :style="{ background: emailStyle.header_background }">
-                                    <span class="email-preview-badge">SD</span>
-                                    <strong>{{ emailStyle.brand_name }}</strong>
-                                </div>
-                                <div class="email-preview-content">
-                                    <h4>{{ activeNotificationTemplate?.title_template || 'Título do email' }}</h4>
-                                    <p><strong>Ticket:</strong> TC-000001</p>
-                                    <p><strong>Assunto:</strong> Exemplo de pedido de suporte</p>
-                                    <p>{{ activeNotificationTemplate?.body_template || 'Corpo configurável do email.' }}</p>
-                                </div>
-                                <div class="email-preview-footer">
-                                    <button
-                                        v-if="emailStyle.show_ticket_link"
-                                        type="button"
-                                        class="email-preview-button"
-                                        :style="{ background: emailStyle.accent_color, borderColor: emailStyle.accent_color }"
-                                    >
-                                        {{ emailStyle.button_text }}
+                                <div class="notification-template-actions">
+                                    <button type="submit" :disabled="savingEmailStyle">
+                                        {{ savingEmailStyle ? 'A guardar...' : 'Guardar aspeto' }}
                                     </button>
-                                    <small>{{ emailStyle.footer_text }}</small>
+                                    <button type="button" class="ghost" @click="resetEmailStyle">Repor padrão</button>
                                 </div>
                             </div>
-                        </article>
-                    </section>
-                </div>
+                        </form>
+                    </div>
+                </QuickMenuPanel>
+
+                <section v-if="showEmailPreviewPanel" class="modal-overlay" @click.self="showEmailPreviewPanel = false">
+                    <article class="modal-card email-preview-modal-card">
+                        <header class="modal-header">
+                            <div>
+                                <h3>Pré-visualização do email</h3>
+                                <p class="muted">Simulação com dados de exemplo. O aspeto real depende do cliente de email.</p>
+                            </div>
+                            <button type="button" class="ghost" @click="showEmailPreviewPanel = false">Fechar</button>
+                        </header>
+
+                        <div class="email-preview-template-tabs" v-if="notificationTemplates.length > 1">
+                            <button
+                                v-for="(tpl, idx) in notificationTemplates"
+                                :key="`prev-tab-${tpl.event_key}`"
+                                type="button"
+                                class="email-preview-tab-btn"
+                                :class="{ active: idx === notificationCarouselIndex }"
+                                @click="goToNotificationTemplateIndex(idx)"
+                            >
+                                {{ notificationEventLabel[tpl.event_key] || tpl.event_key }}
+                            </button>
+                        </div>
+
+                        <div class="email-preview-meta-row" v-if="activeNotificationTemplate">
+                            <span class="email-preview-meta-label">Para:</span>
+                            <span class="email-preview-meta-value">contacto@empresa.pt</span>
+                            <span class="email-preview-meta-label">Assunto:</span>
+                            <span class="email-preview-meta-value" v-html="previewSubjectHtml || '(sem assunto)'"></span>
+                        </div>
+
+                        <div class="email-preview-shell email-preview-shell--modal">
+                            <div class="email-preview-header" :style="{ background: emailStyle.header_background }">
+                                <span class="email-preview-badge">{{ emailStyle.brand_name.charAt(0).toUpperCase() }}</span>
+                                <strong>{{ emailStyle.brand_name }}</strong>
+                            </div>
+                            <div class="email-preview-content">
+                                <h4>{{ previewTitleText }}</h4>
+                                <div class="email-preview-body" v-html="previewBodyHtml"></div>
+                            </div>
+                            <div class="email-preview-footer">
+                                <button
+                                    v-if="emailStyle.show_ticket_link"
+                                    type="button"
+                                    class="email-preview-button"
+                                    :style="{ background: emailStyle.accent_color, borderColor: emailStyle.accent_color }"
+                                >
+                                    {{ emailStyle.button_text }}
+                                </button>
+                                <small>{{ emailStyle.footer_text }}</small>
+                            </div>
+                        </div>
+                    </article>
+                </section>
             </template>
 
             <template v-if="!loading && activeTab === 'logs'">
-                <h2>Ticket logs</h2>
-                <form class="filters" @submit.prevent>
-                    <label>Pesquisa <input v-model="logFilters.search" placeholder="ticket ou ação" @input="applyLogFiltersInstantly" /></label>
-                    <label>Ação <input v-model="logFilters.action" placeholder="status_updated" @input="applyLogFiltersInstantly" /></label>
-                    <label>Ator
-                        <select v-model="logFilters.actor_type" @change="applyLogFiltersImmediately">
-                            <option value="">Todos</option>
-                            <option value="user">user</option>
-                            <option value="contact">contact</option>
-                            <option value="system">system</option>
+                <div class="logs-header">
+                    <div>
+                        <h2>Registos de atividade</h2>
+                        <p v-if="logsMeta" class="logs-total">
+                            {{ logsMeta.total }} {{ logsMeta.total === 1 ? 'registo' : 'registos' }}
+                        </p>
+                    </div>
+                    <button type="button" class="btn btn-secondary btn-sm" :disabled="logsLoading" @click="refreshLogs">
+                        <svg viewBox="0 0 24 24" fill="none" width="14" height="14" aria-hidden="true">
+                            <path d="M4 4v5h5M20 20v-5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M4 9a8 8 0 0 1 14.9-2.1M20 15a8 8 0 0 1-14.9 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        Atualizar
+                    </button>
+                </div>
+
+                <div class="logs-filters">
+                    <label class="logs-filter-field logs-filter-search">
+                        <span class="filter-label">Pesquisa</span>
+                        <input v-model="logFilters.search" type="search" placeholder="ticket, assunto..." @input="applyLogFiltersInstantly" />
+                    </label>
+                    <label class="logs-filter-field">
+                        <span class="filter-label">Ação</span>
+                        <select v-model="logFilters.action" @change="applyLogFiltersImmediately">
+                            <option value="">Todas</option>
+                            <option value="ticket_created">Ticket criado</option>
+                            <option value="message_added">Mensagem adicionada</option>
+                            <option value="status_updated">Estado atualizado</option>
+                            <option value="assignment_updated">Atribuição atualizada</option>
+                            <option value="field_updated">Campo atualizado</option>
+                            <option value="attachments_added">Anexos adicionados</option>
                         </select>
                     </label>
-                </form>
+                    <label class="logs-filter-field">
+                        <span class="filter-label">Ator</span>
+                        <select v-model="logFilters.actor_type" @change="applyLogFiltersImmediately">
+                            <option value="">Todos</option>
+                            <option value="user">Operador</option>
+                            <option value="contact">Contacto</option>
+                            <option value="system">Sistema</option>
+                        </select>
+                    </label>
+                    <label class="logs-filter-field">
+                        <span class="filter-label">De</span>
+                        <input v-model="logFilters.date_from" type="date" @change="applyLogFiltersImmediately" />
+                    </label>
+                    <label class="logs-filter-field">
+                        <span class="filter-label">Até</span>
+                        <input v-model="logFilters.date_to" type="date" @change="applyLogFiltersImmediately" />
+                    </label>
+                    <button
+                        v-if="logFilters.search || logFilters.action || logFilters.actor_type || logFilters.date_from || logFilters.date_to"
+                        type="button"
+                        class="logs-clear-btn"
+                        @click="clearLogFilters"
+                    >
+                        Limpar
+                    </button>
+                </div>
 
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Data</th>
-                            <th>Ticket</th>
-                            <th>Ação</th>
-                            <th>Campo</th>
-                            <th>Ator</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="item in logs" :key="item.id">
-                            <td>{{ formatDate(item.created_at) }}</td>
-                            <td>{{ item.ticket?.ticket_number ?? '-' }}</td>
-                            <td>{{ item.action }}</td>
-                            <td>{{ item.field ?? '-' }}</td>
-                            <td>{{ item.actor_user?.name || item.actor_contact?.name || item.actor_type }}</td>
-                        </tr>
-                        <tr v-if="!logs.length">
-                            <td colspan="5" class="muted">Sem logs para os filtros atuais.</td>
-                        </tr>
-                    </tbody>
-                </table>
+                <div class="logs-table-wrap" :class="{ 'is-loading': logsLoading }">
+                    <table class="table logs-table">
+                        <thead>
+                            <tr>
+                                <th>Data</th>
+                                <th>Ticket</th>
+                                <th>Ação</th>
+                                <th>Alteração</th>
+                                <th>Ator</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="item in logs" :key="item.id" class="log-row">
+                                <td class="log-date">
+                                    <span :title="formatDate(item.created_at)">{{ formatDate(item.created_at) }}</span>
+                                </td>
+                                <td class="log-ticket">
+                                    <RouterLink
+                                        v-if="item.ticket"
+                                        :to="{ name: 'tickets.show', params: { id: item.ticket.id } }"
+                                        class="log-ticket-link"
+                                    >
+                                        <span class="log-ticket-num">#{{ item.ticket.ticket_number }}</span>
+                                        <span v-if="item.ticket.subject" class="log-ticket-sub">{{ item.ticket.subject }}</span>
+                                    </RouterLink>
+                                    <span v-else class="muted">—</span>
+                                </td>
+                                <td class="log-action-cell">
+                                    <span :class="['log-action-badge', `log-action--${item.action}`]">
+                                        {{ {
+                                            ticket_created: 'Criado',
+                                            message_added: 'Mensagem',
+                                            status_updated: 'Estado',
+                                            assignment_updated: 'Atribuição',
+                                            field_updated: 'Campo',
+                                            attachments_added: 'Anexos',
+                                        }[item.action] ?? item.action }}
+                                    </span>
+                                </td>
+                                <td class="log-change">
+                                    <template v-if="item.field">
+                                        <span class="log-field">{{ formatLogField(item.field) }}</span>
+                                        <template v-if="item.old_value !== null && item.new_value !== null">
+                                            <span class="log-old">{{ formatLogValue(item.field, item.old_value) }}</span>
+                                            <svg viewBox="0 0 16 16" fill="none" width="10" height="10" class="log-arrow" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                            <span class="log-new">{{ formatLogValue(item.field, item.new_value) }}</span>
+                                        </template>
+                                        <span v-else-if="item.new_value !== null" class="log-new">{{ formatLogValue(item.field, item.new_value) }}</span>
+                                    </template>
+                                    <span v-else class="muted">—</span>
+                                </td>
+                                <td class="log-actor">
+                                    <span :class="['log-actor-badge', `log-actor--${item.actor_type}`]">
+                                        {{ item.actor_type === 'system' ? 'Sistema' : (item.actor_user?.name || item.actor_contact?.name || item.actor_type) }}
+                                    </span>
+                                </td>
+                            </tr>
+                            <tr v-if="!logsLoading && !logs.length">
+                                <td colspan="5" class="logs-empty">
+                                    <svg viewBox="0 0 24 24" fill="none" width="28" height="28" aria-hidden="true"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="3" width="6" height="4" rx="1" stroke="currentColor" stroke-width="1.6"/><path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                                    <span>Sem registos para os filtros atuais.</span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div v-if="logsLoading" class="logs-loading-overlay" aria-label="A carregar...">
+                        <span class="logs-spinner" />
+                    </div>
+                </div>
+
+                <div v-if="logsMeta && logsMeta.last_page > 1" class="logs-pagination">
+                    <button type="button" class="page-btn" :disabled="logsPage <= 1" @click="goToLogsPage(logsPage - 1)">
+                        <svg viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M10 4L6 8l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <span class="page-info">Página {{ logsPage }} de {{ logsMeta.last_page }}</span>
+                    <button type="button" class="page-btn" :disabled="logsPage >= logsMeta.last_page" @click="goToLogsPage(logsPage + 1)">
+                        <svg viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                </div>
             </template>
         </article>
     </section>
@@ -2524,57 +3242,25 @@ h1, h2 { margin: 0; }
 
 .notification-builder-shell {
     display: grid;
-    grid-template-columns: 220px minmax(0, 1fr) minmax(300px, 360px);
+    grid-template-columns: 220px minmax(0, 1fr);
     gap: 0.6rem;
     align-items: start;
 }
 
-.notification-right-column {
-    min-width: 0;
+.notification-style-panel-body {
+    padding: 0.85rem;
     display: grid;
-    gap: 0.5rem;
-    position: sticky;
-    top: 0.6rem;
-    align-self: start;
+    align-content: start;
+    gap: 0.55rem;
+    overflow: auto;
 }
 
-.notification-style-ddl {
-    position: relative;
-    display: flex;
-    justify-content: flex-end;
-    width: 100%;
-    align-items: flex-start;
-    margin-bottom: 0.35rem;
-}
-
-.notification-style-toggle-btn {
-    width: fit-content;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    padding: 0.35rem 0.58rem;
-    font-size: 0.86rem;
-    font-weight: 700;
-}
-
-.notification-style-toggle-icon {
-    font-size: 0.75rem;
-    opacity: 0.8;
-}
-
-.notification-style-card.compact {
-    padding: 0.52rem;
-}
-
-.notification-style-popover {
-    position: absolute;
-    top: calc(100% + 0.35rem);
-    right: 0;
-    left: auto;
-    width: 100%;
-    max-width: 100%;
-    z-index: 30;
-    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.14);
+.notification-preview-panel-body {
+    padding: 0.85rem;
+    display: grid;
+    align-content: start;
+    gap: 0.6rem;
+    overflow: auto;
 }
 
 .notification-style-form {
@@ -3049,6 +3735,14 @@ th, td {
     border-bottom: 1px solid #e5edf5;
     padding: 0.55rem 0.45rem;
 }
+thead th {
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: #64748b;
+    background: #f8fbff;
+}
 .row-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
 .inbox-row-actions {
@@ -3154,6 +3848,7 @@ th, td {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 0.28rem;
     border-radius: 999px;
     border: 1px solid transparent;
     padding: 0.14rem 0.46rem;
@@ -3189,6 +3884,18 @@ th, td {
     background: #fee2e2;
     border-color: #fecaca;
     color: #991b1b;
+}
+
+.status-chip-dot {
+    gap: 0.35rem;
+}
+
+.status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
 }
 
 .count-pill {
@@ -3386,6 +4093,26 @@ th, td {
     font-size: 0.84rem;
 }
 
+.inbox-image-preview {
+    grid-column: 1 / -1;
+    border: 1px dashed #cbd5e1;
+    border-radius: 12px;
+    padding: 0.5rem;
+    background: #f8fafc;
+    display: flex;
+    justify-content: center;
+}
+
+.inbox-image-preview img {
+    max-width: 100%;
+    max-height: 160px;
+    border-radius: 10px;
+    object-fit: contain;
+    background: #fff;
+    pointer-events: none;
+}
+
+/* keep .modal-overlay for other modals that still use it */
 .modal-overlay {
     position: fixed;
     inset: 0;
@@ -3416,18 +4143,336 @@ th, td {
     gap: 0.8rem;
 }
 
-.modal-header h3 {
-    margin: 0;
-}
-
-.modal-header p {
-    margin: 0.25rem 0 0;
-}
+.modal-header h3 { margin: 0; }
+.modal-header p { margin: 0.25rem 0 0; }
 
 .modal-actions {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+}
+
+/* ── Entity modal (new design) ──────────────────────────────────────────── */
+
+.entity-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    background: rgba(10, 18, 36, 0.5);
+    backdrop-filter: blur(3px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+.entity-modal-card {
+    width: min(700px, calc(100vw - 2rem));
+    max-height: calc(100vh - 2rem);
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 18px;
+    box-shadow: 0 24px 60px rgba(10, 18, 36, 0.22), 0 6px 18px rgba(10, 18, 36, 0.1);
+    overflow: auto;
+}
+
+.entity-modal-header {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 1.1rem 1.3rem;
+    border-bottom: 1px solid #f1f5f9;
+    background: #fafbfd;
+    flex-shrink: 0;
+}
+
+.entity-modal-header-icon {
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #1F4E79 0%, #2563a8 100%);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.entity-modal-header-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.entity-modal-header-text h3 {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+.entity-modal-header-text p {
+    margin: 0.15rem 0 0;
+    font-size: 0.82rem;
+    color: #64748b;
+}
+
+.entity-modal-close {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    color: #64748b;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 0;
+    transition: background 100ms, border-color 100ms, color 100ms;
+}
+
+.entity-modal-close:hover {
+    background: #f8fafc;
+    border-color: #cbd5e1;
+    color: #1e293b;
+}
+
+.entity-modal-body {
+    flex: 1;
+    overflow-y: visible;
+    padding: 1.1rem 1.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.emf-section {
+    padding-bottom: 1.1rem;
+    margin-bottom: 1.1rem;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.emf-section-last {
+    padding-bottom: 0;
+    margin-bottom: 0;
+    border-bottom: none;
+}
+
+.emf-section-title {
+    margin: 0 0 0.7rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.emf-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.65rem;
+}
+
+.emf-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+}
+
+.emf-field span {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #475569;
+}
+
+.emf-field input,
+.emf-field select,
+.emf-field textarea {
+    border: 1px solid #e2e8f0;
+    border-radius: 9px;
+    padding: 0.46rem 0.62rem;
+    font: inherit;
+    font-size: 0.9rem;
+    color: #0f172a;
+    background: #fff;
+    transition: border-color 140ms, box-shadow 140ms;
+}
+
+.emf-field input:focus,
+.emf-field select:focus,
+.emf-field textarea:focus {
+    outline: none;
+    border-color: #1F4E79;
+    box-shadow: 0 0 0 3px rgba(31, 78, 121, 0.1);
+}
+
+.emf-field textarea {
+    resize: vertical;
+    min-height: 72px;
+}
+
+/* grid: Identificação — Tipo | Nome(flex) | NIF */
+.emf-grid-id {
+    grid-template-columns: minmax(110px, 1fr) 2fr minmax(110px, 1fr);
+}
+
+/* grid: Contacto — 2 colunas iguais */
+.emf-grid-2 {
+    grid-template-columns: 1fr 1fr;
+}
+
+/* grid: Localização — CP | Cidade | País */
+.emf-grid-loc {
+    grid-template-columns: 1fr 1fr 1fr;
+}
+
+.emf-col-2 { grid-column: span 2; }
+.emf-col-3 { grid-column: span 3; }
+.emf-col-grow { grid-column: auto; }
+.emf-col-loc-full { grid-column: span 3; }
+
+.emf-required {
+    font-style: normal;
+    color: #e11d48;
+    margin-left: 1px;
+}
+
+.emf-toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #f8fafc;
+    cursor: pointer;
+    margin-bottom: 0.65rem;
+}
+
+.emf-toggle-label {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: #334155;
+}
+
+.emf-toggle-btn {
+    width: 44px;
+    height: 24px;
+    border-radius: 999px;
+    border: none;
+    background: #cbd5e1;
+    padding: 2px;
+    cursor: pointer;
+    transition: background 200ms;
+    position: relative;
+    flex-shrink: 0;
+}
+
+.emf-toggle-btn.emf-toggle-on { background: #1F4E79; }
+
+.emf-toggle-thumb {
+    display: block;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+    transition: transform 200ms;
+}
+
+.emf-toggle-on .emf-toggle-thumb { transform: translateX(20px); }
+
+.entity-modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.6rem;
+    padding: 0.9rem 1.3rem;
+    border-top: 1px solid #f1f5f9;
+    background: #fafbfd;
+    flex-shrink: 0;
+}
+
+.entity-modal-footer button {
+    padding: 0.5rem 1.1rem;
+    font-size: 0.9rem;
+    border-radius: 10px;
+}
+
+.email-preview-modal-card {
+    width: min(760px, calc(100vw - 2rem));
+}
+
+.email-preview-modal-card .email-preview-content {
+    max-height: none;
+}
+
+.email-preview-template-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    padding-bottom: 0.1rem;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.email-preview-tab-btn {
+    background: none;
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    padding: 0.28rem 0.65rem;
+    font-size: 0.82rem;
+    color: #475569;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.email-preview-tab-btn:hover {
+    background: #f1f5f9;
+}
+
+.email-preview-tab-btn.active {
+    background: #1F4E79;
+    color: #fff;
+    border-color: #1F4E79;
+}
+
+.email-preview-meta-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.2rem 0.5rem;
+    align-items: baseline;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.86rem;
+}
+
+.email-preview-meta-label {
+    color: #64748b;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.email-preview-meta-value {
+    color: #1e293b;
+    word-break: break-word;
+}
+
+.email-preview-shell--modal {
+    max-width: 560px;
+    margin: 0 auto;
+}
+
+.email-preview-body {
+    color: #334155;
+    font-size: 0.9rem;
+    line-height: 1.55;
+    white-space: pre-wrap;
 }
 
 @media (max-width: 960px) {
@@ -3439,17 +4484,8 @@ th, td {
     .notification-template-grid { grid-template-columns: 1fr; }
     .notification-style-form { grid-template-columns: 1fr; }
     .notification-style-actions-row { justify-content: flex-start; }
-    .notification-right-column {
-        position: static;
-    }
     .notification-preview-side {
         position: static;
-    }
-    .notification-style-popover {
-        position: static;
-        width: 100%;
-        margin-top: 0.4rem;
-        box-shadow: none;
     }
     .notification-carousel-header {
         grid-template-columns: 1fr;
@@ -3479,5 +4515,434 @@ th, td {
     }
 
     .table td { border: none; padding: 0.25rem 0.15rem; }
+}
+
+/* ── Logs tab ─────────────────────────────────────────────────────────────── */
+
+.logs-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.6rem;
+}
+
+.logs-header h2 { margin-bottom: 0.1rem; }
+
+.logs-total {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #64748b;
+}
+
+.btn-sm {
+    padding: 0.35rem 0.65rem;
+    font-size: 0.82rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.logs-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.5rem;
+}
+
+.logs-filter-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.22rem;
+}
+
+.logs-filter-search { flex: 1 1 180px; }
+.logs-filter-field:not(.logs-filter-search) { flex: 0 0 auto; min-width: 130px; }
+
+.filter-label {
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.logs-filter-field input,
+.logs-filter-field select {
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    background: #fff;
+    padding: 0.4rem 0.55rem;
+    font: inherit;
+    font-size: 0.87rem;
+    color: #0f172a;
+}
+
+.logs-clear-btn {
+    align-self: flex-end;
+    padding: 0.4rem 0.7rem;
+    font-size: 0.84rem;
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    background: #f8fafc;
+    color: #475569;
+    cursor: pointer;
+}
+
+.logs-clear-btn:hover { background: #f1f5f9; border-color: #cbd5e1; }
+
+.logs-table-wrap {
+    position: relative;
+    border: 1px solid #dbe4ee;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #fff;
+}
+
+.logs-table-wrap.is-loading { opacity: 0.55; pointer-events: none; }
+
+.logs-table {
+    margin: 0;
+    border: none;
+}
+
+.logs-table th {
+    background: #f8fafc;
+    font-size: 0.74rem;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid #dbe4ee;
+}
+
+.log-row td {
+    padding: 0.55rem 0.75rem;
+    vertical-align: middle;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.log-row:last-child td { border-bottom: none; }
+.log-row:hover td { background: #fafbfd; }
+
+.log-date {
+    font-size: 0.78rem;
+    color: #64748b;
+    white-space: nowrap;
+}
+
+.log-ticket-link {
+    display: flex;
+    flex-direction: column;
+    gap: 0.06rem;
+    text-decoration: none;
+    color: inherit;
+}
+
+.log-ticket-link:hover .log-ticket-num { text-decoration: underline; }
+
+.log-ticket-num {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #1e40af;
+}
+
+.log-ticket-sub {
+    font-size: 0.74rem;
+    color: #64748b;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.log-action-badge {
+    display: inline-block;
+    padding: 0.18rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    font-weight: 600;
+    white-space: nowrap;
+    border: 1px solid transparent;
+}
+
+.log-action--ticket_created    { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
+.log-action--message_added     { background: #f1f5f9; color: #334155; border-color: #e2e8f0; }
+.log-action--status_updated    { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; }
+.log-action--assignment_updated{ background: #f3e8ff; color: #6b21a8; border-color: #e9d5ff; }
+.log-action--field_updated     { background: #fff7ed; color: #9a3412; border-color: #fed7aa; }
+.log-action--attachments_added { background: #ccfbf1; color: #065f46; border-color: #99f6e4; }
+
+.log-change {
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+}
+
+.log-field {
+    font-size: 0.72rem;
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    padding: 0.08rem 0.36rem;
+    color: #475569;
+    margin-right: 0.1rem;
+}
+
+.log-old {
+    color: #b91c1c;
+    font-size: 0.8rem;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.log-new {
+    color: #166534;
+    font-size: 0.8rem;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.log-arrow { color: #94a3b8; flex-shrink: 0; }
+
+.log-actor-badge {
+    display: inline-block;
+    padding: 0.16rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    font-weight: 500;
+    border: 1px solid transparent;
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.log-actor--user    { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+.log-actor--contact { background: #fefce8; color: #92400e; border-color: #fde68a; }
+.log-actor--system  { background: #f1f5f9; color: #475569; border-color: #e2e8f0; }
+
+.logs-empty {
+    text-align: center;
+    padding: 2.5rem 1rem !important;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.55rem;
+    color: #94a3b8;
+    font-size: 0.88rem;
+}
+
+.logs-loading-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255,255,255,0.6);
+}
+
+.logs-spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid #e2e8f0;
+    border-top-color: #1F4E79;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.logs-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+}
+
+.page-btn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid #dbe4ee;
+    border-radius: 8px;
+    background: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: #334155;
+}
+
+.page-btn:hover:not(:disabled) { background: #f1f5f9; border-color: #cbd5e1; }
+.page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.page-info {
+    font-size: 0.84rem;
+    color: #475569;
+}
+
+/* ── Entities tab ────────────────────────────────────────────────────────── */
+
+.entities-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+.entities-header h2 { margin-bottom: 0.1rem; }
+
+.entities-subtitle {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #64748b;
+}
+
+.btn-entity-new {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.9rem;
+    font-size: 0.88rem;
+    border-radius: 10px;
+    background: #1F4E79;
+    color: #fff;
+    border: none;
+    cursor: pointer;
+    font-weight: 600;
+    white-space: nowrap;
+    transition: background 120ms, transform 80ms;
+}
+
+.btn-entity-new:hover { background: #174069; }
+.btn-entity-new:active { transform: scale(0.98); }
+
+.entity-row { transition: background 80ms; }
+.entity-row:hover td { background: #f8fafc; }
+
+.entity-name-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+}
+
+.entity-initials {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.76rem;
+    font-weight: 800;
+    flex-shrink: 0;
+    letter-spacing: 0.02em;
+}
+
+.entity-initials-image {
+    padding: 0;
+    overflow: hidden;
+    background: #fff;
+    border: 1px solid #dbe4ee;
+}
+
+.entity-initials-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.entity-initials.type-internal {
+    background: #ecfeff;
+    color: #155e75;
+    border: 1px solid #a5f3fc;
+}
+
+.entity-initials.type-external {
+    background: #eff6ff;
+    color: #1d4ed8;
+    border: 1px solid #bfdbfe;
+}
+
+.entity-name-cell > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.22rem;
+}
+
+.entity-name-text {
+    font-weight: 600;
+    font-size: 0.88rem;
+    color: #0f172a;
+    line-height: 1.2;
+}
+
+.entity-contact-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+
+.entity-contact-line {
+    font-size: 0.82rem;
+    color: #334155;
+    line-height: 1.3;
+}
+
+.entity-row-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.3rem;
+}
+
+.entity-row-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    color: #475569;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    transition: background 100ms, border-color 100ms, color 100ms;
+}
+
+.entity-row-btn:hover {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+    color: #1F4E79;
+}
+
+.entity-row-btn-danger:hover {
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: #b91c1c;
+}
+
+.inbox-operators-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.entity-empty {
+    text-align: center;
+    padding: 2.5rem 1rem !important;
+    display: flex !important;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    color: #94a3b8;
+    font-size: 0.88rem;
 }
 </style>

@@ -5,7 +5,6 @@ import ForgotPasswordPage from '../pages/ForgotPasswordPage.vue';
 import ResetPasswordPage from '../pages/ResetPasswordPage.vue';
 import AcceptInvitePage from '../pages/AcceptInvitePage.vue';
 import DashboardPage from '../pages/DashboardPage.vue';
-import NotificationsPage from '../pages/NotificationsPage.vue';
 import ProfilePage from '../pages/ProfilePage.vue';
 import ManagementPage from '../pages/ManagementPage.vue';
 import TicketsListPage from '../pages/TicketsListPage.vue';
@@ -62,12 +61,6 @@ const routes = [
         path: '/dashboard',
         name: 'dashboard',
         component: DashboardPage,
-        meta: { requiresAuth: true },
-    },
-    {
-        path: '/notifications',
-        name: 'notifications.index',
-        component: NotificationsPage,
         meta: { requiresAuth: true },
     },
     {

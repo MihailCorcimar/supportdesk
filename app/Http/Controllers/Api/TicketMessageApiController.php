@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Events\TicketMessageCreated;
 use App\Models\Contact;
 use App\Models\Ticket;
 use App\Models\TicketAttachment;
@@ -168,6 +169,13 @@ class TicketMessageApiController extends Controller
 
         if (! $isInternal) {
             $this->notificationService->notifyTicketReplied($ticket, $message);
+
+            $logs = $ticket->logs()
+                ->where('metadata->message_id', $message->id)
+                ->latest('created_at')
+                ->get();
+
+            broadcast(new TicketMessageCreated($ticket, $message, $logs->all()));
         }
 
         return response()->json([

@@ -18,32 +18,32 @@ return [
             'show_ticket_link' => (bool) env('SUPPORTDESK_EMAIL_SHOW_TICKET_LINK', true),
         ],
         'subjects' => [
-            'ticket_created' => env('SUPPORTDESK_SUBJECT_TICKET_CREATED', '[Supportdesk] Novo ticket {ticket_number}'),
-            'ticket_replied' => env('SUPPORTDESK_SUBJECT_TICKET_REPLIED', '[Supportdesk] Nova resposta no ticket {ticket_number}'),
-            'ticket_assignment_updated' => env('SUPPORTDESK_SUBJECT_TICKET_ASSIGNMENT', '[Supportdesk] Atribuicao atualizada no ticket {ticket_number}'),
-            'ticket_status_updated' => env('SUPPORTDESK_SUBJECT_TICKET_STATUS', '[Supportdesk] Estado atualizado no ticket {ticket_number}'),
-            'ticket_knowledge_updated' => env('SUPPORTDESK_SUBJECT_TICKET_KNOWLEDGE', '[Supportdesk] Conhecimento atualizado no ticket {ticket_number}'),
+            'ticket_created' => env('SUPPORTDESK_SUBJECT_TICKET_CREATED', '[Supportdesk] Novo ticket {ticket_number} — {subject}'),
+            'ticket_replied' => env('SUPPORTDESK_SUBJECT_TICKET_REPLIED', '[Supportdesk] Nova resposta — {ticket_number}'),
+            'ticket_assignment_updated' => env('SUPPORTDESK_SUBJECT_TICKET_ASSIGNMENT', '[Supportdesk] Atribuição atualizada — {ticket_number}'),
+            'ticket_status_updated' => env('SUPPORTDESK_SUBJECT_TICKET_STATUS', '[Supportdesk] Estado atualizado — {ticket_number}'),
+            'ticket_knowledge_updated' => env('SUPPORTDESK_SUBJECT_TICKET_KNOWLEDGE', '[Supportdesk] Conhecimento atualizado — {ticket_number}'),
         ],
         'templates' => [
             'ticket_created' => [
                 'title' => 'Novo ticket criado',
-                'body' => "Foi criado um novo ticket.\nNumero: {ticket_number}\nAssunto: {subject}\nEstado: {status}\nPrioridade: {priority}",
+                'body' => "Foi criado um novo ticket que necessita de atenção.\nEntidade: {entity} | Contacto: {contact}\nCriado por: {creator_name}",
             ],
             'ticket_replied' => [
-                'title' => 'Nova resposta no ticket',
-                'body' => "Foi adicionada uma nova resposta ao ticket {ticket_number}.\nAutor: {author_name}\nResumo: {message_preview}",
+                'title' => 'Nova resposta adicionada',
+                'body' => "Foi adicionada uma nova resposta por {author_name}.\n{message_preview}",
             ],
             'ticket_assignment_updated' => [
-                'title' => 'Atribuicao atualizada',
-                'body' => "A atribuicao do ticket {ticket_number} foi atualizada.\nOperador responsavel: {assigned_operator}",
+                'title' => 'Atribuição atualizada',
+                'body' => "O ticket foi atribuído ao operador {assigned_operator}.",
             ],
             'ticket_status_updated' => [
-                'title' => 'Estado do ticket atualizado',
-                'body' => "O estado do ticket {ticket_number} foi atualizado.\nEstado atual: {status}",
+                'title' => 'Estado atualizado',
+                'body' => "O estado do ticket foi alterado para {status}.",
             ],
             'ticket_knowledge_updated' => [
-                'title' => 'Conhecimento do ticket atualizado',
-                'body' => "A lista de utilizadores em conhecimento do ticket {ticket_number} foi atualizada.\nAssunto: {subject}\nUtilizadores em conhecimento: {cc_emails}\nPode acompanhar o ticket atraves do link abaixo.",
+                'title' => 'Lista de conhecimento atualizada',
+                'body' => "A lista de utilizadores em conhecimento foi atualizada.\nUtilizadores em conhecimento: {cc_emails}\nPode acompanhar a evolução do ticket através do link abaixo.",
             ],
         ],
     ],
@@ -51,6 +51,11 @@ return [
     'sla' => [
         'first_response_hours' => (int) env('SUPPORTDESK_SLA_FIRST_RESPONSE_HOURS', 4),
         'resolution_hours' => (int) env('SUPPORTDESK_SLA_RESOLUTION_HOURS', 24),
+    ],
+
+    'dashboard' => [
+        'critical_backlog_hours' => (int) env('SUPPORTDESK_DASHBOARD_CRITICAL_BACKLOG_HOURS', 24),
+        'daily_flow_days' => (int) env('SUPPORTDESK_DASHBOARD_DAILY_FLOW_DAYS', 14),
     ],
 
     'invites' => [

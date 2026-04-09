@@ -39,6 +39,7 @@ Route::prefix('app-api')->group(function (): void {
         Route::get('/notifications/unread-count', [UserNotificationApiController::class, 'unreadCount']);
         Route::patch('/notifications/{notification}/read', [UserNotificationApiController::class, 'markRead']);
         Route::patch('/notifications/read-all', [UserNotificationApiController::class, 'markAllRead']);
+        Route::patch('/notifications/read-ticket', [UserNotificationApiController::class, 'markTicketRead']);
         Route::get('/dashboard/summary', [DashboardApiController::class, 'summary']);
         Route::get('/tickets', [TicketApiController::class, 'index']);
         Route::post('/tickets', [TicketApiController::class, 'store']);

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Inbox;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
@@ -54,6 +55,7 @@ class InboxApiController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:120'],
             'is_active' => ['sometimes', 'boolean'],
+            'image' => ['sometimes', 'file', 'image', 'max:4096'],
         ]);
 
         $name = trim((string) $validated['name']);
@@ -63,6 +65,12 @@ class InboxApiController extends Controller
             'slug' => $this->resolveSlug($name),
             'is_active' => (bool) ($validated['is_active'] ?? true),
         ]);
+
+        if ($request->hasFile('image')) {
+            $path = $request->file('image')->store("inboxes/{$inbox->id}", 'public');
+            $inbox->image_path = $path;
+            $inbox->save();
+        }
 
         $inbox->loadCount(['tickets', 'operators']);
 
@@ -85,6 +93,7 @@ class InboxApiController extends Controller
                 'integer',
                 Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'operator')),
             ],
+            'image' => ['sometimes', 'file', 'image', 'max:4096'],
         ]);
 
         if ($validated === []) {
@@ -98,6 +107,15 @@ class InboxApiController extends Controller
 
         if (array_key_exists('is_active', $validated)) {
             $inbox->is_active = (bool) $validated['is_active'];
+        }
+
+        if ($request->hasFile('image')) {
+            $existing = trim((string) $inbox->image_path);
+            if ($existing !== '') {
+                Storage::disk('public')->delete($existing);
+            }
+            $path = $request->file('image')->store("inboxes/{$inbox->id}", 'public');
+            $inbox->image_path = $path;
         }
 
         $inbox->save();
@@ -161,6 +179,7 @@ class InboxApiController extends Controller
             'id' => $inbox->id,
             'name' => $inbox->name,
             'slug' => $inbox->slug,
+            'image_url' => $this->imageUrl($inbox),
             'is_active' => (bool) $inbox->is_active,
             'tickets_count' => (int) ($inbox->tickets_count ?? 0),
             'operators_count' => (int) ($inbox->operators_count ?? 0),
@@ -171,6 +190,16 @@ class InboxApiController extends Controller
                 'can_manage_users' => (bool) ($operator->pivot?->can_manage_users ?? false),
             ])->values()->all(),
         ];
+    }
+
+    private function imageUrl(Inbox $inbox): ?string
+    {
+        $path = trim((string) $inbox->image_path);
+        if ($path === '') {
+            return null;
+        }
+
+        return url('/storage/'.ltrim($path, '/'));
     }
 
     /**

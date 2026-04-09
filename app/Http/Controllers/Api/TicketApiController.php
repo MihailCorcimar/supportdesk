@@ -86,12 +86,15 @@ class TicketApiController extends Controller
         $ticketTypes = $this->ticketTypes();
         $triageInbox = $this->triageInbox();
 
-        $contacts = Contact::query()
-            ->with('entities:id,name')
-            ->whereHas('entities', fn (Builder $query) => $query->whereIn('entities.id', $entityIds))
-            ->where('is_active', true)
-            ->orderBy('name')
-            ->get();
+        $contacts = collect();
+        if ($entityIds->isNotEmpty()) {
+            $contacts = Contact::query()
+                ->with('entities:id,name')
+                ->whereHas('entities', fn (Builder $query) => $query->whereIn('entities.id', $entityIds))
+                ->where('is_active', true)
+                ->orderBy('name')
+                ->get();
+        }
 
         $operators = User::query()
             ->where('role', 'operator')
@@ -160,9 +163,15 @@ class TicketApiController extends Controller
         $user = $request->user();
         $mustUseTriageInbox = $this->mustUseTriageInbox($user);
 
+        $inboxRules = ['integer', Rule::exists('inboxes', 'id')];
+        $inboxRules[] = $mustUseTriageInbox ? 'nullable' : 'required';
+
+        $entityRules = ['integer', Rule::exists('entities', 'id')];
+        $entityRules[] = $user->isClient() ? 'nullable' : 'required';
+
         $validated = $request->validate([
-            'inbox_id' => ['required', 'integer', Rule::exists('inboxes', 'id')],
-            'entity_id' => ['required', 'integer', Rule::exists('entities', 'id')],
+            'inbox_id' => $inboxRules,
+            'entity_id' => $entityRules,
             'contact_id' => ['nullable', 'integer', Rule::exists('contacts', 'id')],
             'subject' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'required_without:attachments'],
@@ -178,16 +187,21 @@ class TicketApiController extends Controller
             'attachments.*' => ['file', 'max:10240', 'mimes:jpg,jpeg,png,pdf,doc,docx,xls,xlsx,txt,csv,zip'],
         ]);
 
-        $targetInboxId = (int) $validated['inbox_id'];
+        $targetInboxId = (int) ($validated['inbox_id'] ?? 0);
         if ($mustUseTriageInbox) {
             $triageInbox = $this->triageInbox();
             if (! $triageInbox) {
-                throw ValidationException::withMessages([
-                    'inbox_id' => 'Inbox Geral is not configured.',
-                ]);
-            }
+                $fallbackInbox = $this->inboxesForUser($user)->first();
+                if (! $fallbackInbox) {
+                    throw ValidationException::withMessages([
+                        'inbox_id' => 'No active inbox available.',
+                    ]);
+                }
 
-            $targetInboxId = (int) $triageInbox->id;
+                $targetInboxId = (int) $fallbackInbox->id;
+            } else {
+                $targetInboxId = (int) $triageInbox->id;
+            }
         }
 
         if (
@@ -198,8 +212,15 @@ class TicketApiController extends Controller
             abort(403);
         }
 
-        if ($user->isClient() && ! $user->entities()->whereKey($validated['entity_id'])->exists()) {
-            abort(403);
+        $entityId = (int) ($validated['entity_id'] ?? 0);
+        if ($user->isClient()) {
+            if (! $entityId || ! $user->entities()->whereKey($entityId)->exists()) {
+                $entityId = $this->ensureClientEntity($user)->id;
+            }
+        } elseif (! $entityId) {
+            throw ValidationException::withMessages([
+                'entity_id' => 'Entity is required.',
+            ]);
         }
 
         if (
@@ -211,7 +232,11 @@ class TicketApiController extends Controller
             ]);
         }
 
-        $contact = $this->resolveTicketContact($user, (int) $validated['entity_id'], $validated['contact_id'] ?? null);
+        if ($user->isClient()) {
+            $this->ensureClientContactForEntity($user, $entityId);
+        }
+
+        $contact = $this->resolveTicketContact($user, $entityId, $validated['contact_id'] ?? null);
         $assignedOperator = $this->resolveAssignedOperator($validated['assigned_operator_id'] ?? null, $targetInboxId);
         $ccEmails = $this->parseCcEmails($validated['cc_emails'] ?? null);
         $followerUserIds = $this->parseFollowerUserIds($validated['follower_user_ids'] ?? [], $user, $targetInboxId);
@@ -237,13 +262,14 @@ class TicketApiController extends Controller
             $initialStatus,
             $descriptionFormat,
             $descriptionBody,
+            $entityId,
             $targetInboxId,
             $files
         ) {
             $ticket = Ticket::query()->create([
                 'ticket_number' => 'TMP-'.(string) Str::ulid(),
                 'inbox_id' => $targetInboxId,
-                'entity_id' => $validated['entity_id'],
+                'entity_id' => $entityId,
                 'contact_id' => $contact?->id,
                 'creator_contact_id' => $contact?->id,
                 'created_by_user_id' => $user->id,
@@ -660,10 +686,9 @@ class TicketApiController extends Controller
 
             if (
                 in_array($newStatus, ['closed', 'cancelled'], true)
-                && $ticket->assigned_operator_id
-                && $ticket->assigned_operator_id !== $request->user()->id
+                && ! $this->canUserSetTerminalStatus($request->user(), $ticket)
             ) {
-                abort(403, 'Only the assigned operator can close or cancel this ticket.');
+                abort(403, 'Only the assigned operator or inbox manager can close or cancel this ticket.');
             }
 
             $updates['status'] = $newStatus;
@@ -809,10 +834,9 @@ class TicketApiController extends Controller
                     if ($ticket->status !== $candidateStatus) {
                         if (
                             in_array($candidateStatus, ['closed', 'cancelled'], true)
-                            && $ticket->assigned_operator_id
-                            && (int) $ticket->assigned_operator_id !== (int) $user->id
+                            && ! $this->canUserSetTerminalStatus($user, $ticket)
                         ) {
-                            $skipReasons[] = 'Apenas o operador atribuído pode fechar/cancelar.';
+                            $skipReasons[] = 'Apenas o operador atribuído ou gestor da inbox pode fechar/cancelar.';
                         } else {
                             $oldStatus = (string) $ticket->status;
                             $newStatus = $candidateStatus;
@@ -941,8 +965,8 @@ class TicketApiController extends Controller
             ]);
         }
 
-        if ($ticket->assigned_operator_id && $ticket->assigned_operator_id !== $request->user()->id) {
-            abort(403, 'Only the assigned operator can close or cancel this ticket.');
+        if (! $this->canUserSetTerminalStatus($request->user(), $ticket)) {
+            abort(403, 'Only the assigned operator or inbox manager can close or cancel this ticket.');
         }
 
         $oldStatus = $ticket->status;
@@ -993,10 +1017,9 @@ class TicketApiController extends Controller
 
         if (
             in_array($newStatus, ['closed', 'cancelled'], true)
-            && $ticket->assigned_operator_id
-            && $ticket->assigned_operator_id !== $request->user()->id
+            && ! $this->canUserSetTerminalStatus($request->user(), $ticket)
         ) {
-            abort(403, 'Only the assigned operator can close or cancel this ticket.');
+            abort(403, 'Only the assigned operator or inbox manager can close or cancel this ticket.');
         }
 
         $ticket->update(array_merge([
@@ -1303,12 +1326,36 @@ class TicketApiController extends Controller
             $query->where('priority', $request->string('priority'));
         }
 
-        if ($request->filled('entity_id')) {
+        if ($request->filled('entity_ids')) {
+            $entityIds = collect((array) $request->query('entity_ids'))
+                ->map(fn (mixed $id) => (int) $id)
+                ->filter(fn (int $id) => $id > 0)
+                ->unique()
+                ->values();
+
+            if ($entityIds->isNotEmpty()) {
+                $query->whereIn('entity_id', $entityIds->all());
+            }
+        } elseif ($request->filled('entity_id')) {
             $query->where('entity_id', $request->integer('entity_id'));
         }
 
         if ($request->filled('created_by_user_id')) {
             $query->where('created_by_user_id', $request->integer('created_by_user_id'));
+        }
+
+        $requestDateFrom = $this->normalizeDateFilterValue($request->query('request_date_from'));
+        $requestDateTo = $this->normalizeDateFilterValue($request->query('request_date_to'));
+        if ($requestDateFrom !== null && $requestDateTo !== null && $requestDateFrom > $requestDateTo) {
+            [$requestDateFrom, $requestDateTo] = [$requestDateTo, $requestDateFrom];
+        }
+
+        if ($requestDateFrom !== null) {
+            $query->whereDate('created_at', '>=', $requestDateFrom);
+        }
+
+        if ($requestDateTo !== null) {
+            $query->whereDate('created_at', '<=', $requestDateTo);
         }
 
         if ($request->filled('search')) {
@@ -1318,9 +1365,25 @@ class TicketApiController extends Controller
                 $inner->where('ticket_number', 'like', "%{$search}%")
                     ->orWhere('subject', 'like', "%{$search}%")
                     ->orWhereHas('entity', fn (Builder $entityQuery) => $entityQuery->where('name', 'like', "%{$search}%"))
-                    ->orWhereHas('contact', fn (Builder $contactQuery) => $contactQuery->where('email', 'like', "%{$search}%"));
+                ->orWhereHas('contact', fn (Builder $contactQuery) => $contactQuery->where('email', 'like', "%{$search}%"));
             });
         }
+    }
+
+    private function normalizeDateFilterValue(mixed $value): ?string
+    {
+        $date = trim((string) $value);
+
+        if ($date === '' || preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) !== 1) {
+            return null;
+        }
+
+        [$year, $month, $day] = array_map(static fn (string $part): int => (int) $part, explode('-', $date));
+        if (! checkdate($month, $day, $year)) {
+            return null;
+        }
+
+        return sprintf('%04d-%02d-%02d', $year, $month, $day);
     }
 
     /**
@@ -1401,7 +1464,7 @@ class TicketApiController extends Controller
      */
     private function mustUseTriageInbox(User $user): bool
     {
-        return $user->isClient();
+        return false;
     }
 
     /**
@@ -1453,6 +1516,88 @@ class TicketApiController extends Controller
     }
 
     /**
+     * Ensure client has an active entity to use on ticket creation.
+     */
+    private function ensureClientEntity(User $user): Entity
+    {
+        $existing = $user->entities()
+            ->where('entities.is_active', true)
+            ->orderBy('entities.name')
+            ->first();
+
+        if ($existing) {
+            return $existing;
+        }
+
+        $normalizedEmail = $user->email ? mb_strtolower($user->email) : null;
+        $name = $user->name !== '' ? $user->name : 'Cliente';
+
+        $entity = Entity::query()->create([
+            'type' => 'external',
+            'name' => $name,
+            'slug' => $this->generateUniqueEntitySlug($name),
+            'email' => $normalizedEmail,
+            'country' => 'PT',
+            'is_active' => true,
+        ]);
+
+        $contact = $this->ensureClientContact($user, $normalizedEmail);
+        $contact->entities()->syncWithoutDetaching([$entity->id]);
+
+        return $entity;
+    }
+
+    /**
+     * Ensure client has a contact profile.
+     */
+    private function ensureClientContact(User $user, ?string $normalizedEmail = null): Contact
+    {
+        $contact = Contact::query()->where('user_id', $user->id)->first();
+        if ($contact) {
+            return $contact;
+        }
+
+        return Contact::query()->create([
+            'user_id' => $user->id,
+            'name' => $user->name,
+            'email' => $normalizedEmail ?? $user->email,
+            'is_active' => true,
+        ]);
+    }
+
+    /**
+     * Ensure client contact is linked to the given entity.
+     */
+    private function ensureClientContactForEntity(User $user, int $entityId): Contact
+    {
+        $contact = $this->ensureClientContact($user, $user->email ? mb_strtolower($user->email) : null);
+
+        if (! $contact->entities()->whereKey($entityId)->exists()) {
+            $contact->entities()->syncWithoutDetaching([$entityId]);
+        }
+
+        return $contact;
+    }
+
+    /**
+     * Generate unique slug for auto-created client entity.
+     */
+    private function generateUniqueEntitySlug(string $name): string
+    {
+        $base = Str::slug($name);
+        $base = $base !== '' ? $base : 'cliente';
+        $slug = $base;
+        $suffix = 2;
+
+        while (Entity::query()->where('slug', $slug)->exists()) {
+            $slug = $base.'-'.$suffix;
+            $suffix++;
+        }
+
+        return $slug;
+    }
+
+    /**
      * Get follower candidates available for the current user.
      */
     private function followerCandidatesForUser(User $user, ?int $inboxId = null)
@@ -1464,7 +1609,7 @@ class TicketApiController extends Controller
             $query->where(function (Builder $builder) use ($user): void {
                 $builder
                     ->where('role', 'operator')
-                    ->orWhereKey($user->id);
+                    ->orWhere('id', $user->id);
             });
         } elseif ($user->isOperator() && ! $user->isAdmin()) {
             $allowedInboxIds = $user->accessibleInboxes()->pluck('inboxes.id')->map(fn (int|string $id) => (int) $id)->all();
@@ -1556,6 +1701,19 @@ class TicketApiController extends Controller
             ->where('is_active', true)
             ->whereHas('accessibleInboxes', fn (Builder $query) => $query->whereKey($inboxId))
             ->firstOrFail();
+    }
+
+    /**
+     * Determine if user can set terminal statuses (closed/cancelled) on a ticket.
+     */
+    private function canUserSetTerminalStatus(User $user, Ticket $ticket): bool
+    {
+        if (! $ticket->assigned_operator_id) {
+            return true;
+        }
+
+        return (int) $ticket->assigned_operator_id === (int) $user->id
+            || $user->hasInboxManagementAccess((int) $ticket->inbox_id);
     }
 
     /**
@@ -1854,6 +2012,7 @@ class TicketApiController extends Controller
                 'can_reply' => $request->user()->can('reply', $ticket),
                 'can_add_internal_note' => $request->user()->isOperator() && $request->user()->can('view', $ticket),
                 'can_update_status' => $request->user()->can('updateStatus', $ticket),
+                'can_update_terminal_status' => $this->canUserSetTerminalStatus($request->user(), $ticket),
                 'can_assign' => $request->user()->can('assign', $ticket),
                 'can_update_metadata' => $request->user()->can('updateMetadata', $ticket),
                 'can_update' => $request->user()->can('updateMetadata', $ticket),

@@ -20,7 +20,7 @@ class TicketPolicy
             return true;
         }
 
-        return $user->entities()->exists();
+        return $user->isClient();
     }
 
     /**
@@ -37,7 +37,8 @@ class TicketPolicy
                 || (int) $ticket->created_by_user_id === (int) $user->id;
         }
 
-        return $user->entities()->whereKey($ticket->entity_id)->exists();
+        return (int) $ticket->created_by_user_id === (int) $user->id
+            || $user->entities()->whereKey($ticket->entity_id)->exists();
     }
 
     /**
@@ -94,3 +95,5 @@ class TicketPolicy
         return in_array($ticket->status, ['closed', 'cancelled'], true);
     }
 }
+
+

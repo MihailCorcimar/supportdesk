@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\UserNotification;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Database\Eloquent\Builder;
 
 class UserNotificationApiController extends Controller
 {
@@ -32,6 +33,8 @@ class UserNotificationApiController extends Controller
             ->where('user_id', $user->id)
             ->with('ticket:id,ticket_number,subject');
 
+        $this->applyClientVisibility($query, $user);
+
         if ($request->boolean('unread_only')) {
             $query->where('is_read', false);
         }
@@ -53,6 +56,7 @@ class UserNotificationApiController extends Controller
                 'unread_count' => UserNotification::query()
                     ->where('user_id', $user->id)
                     ->where('is_read', false)
+                    ->tap(fn (Builder $query) => $this->applyClientVisibility($query, $user))
                     ->count(),
             ],
         ]);
@@ -63,9 +67,11 @@ class UserNotificationApiController extends Controller
      */
     public function unreadCount(Request $request): JsonResponse
     {
+        $user = $request->user();
         $count = UserNotification::query()
-            ->where('user_id', $request->user()->id)
+            ->where('user_id', $user->id)
             ->where('is_read', false)
+            ->tap(fn (Builder $query) => $this->applyClientVisibility($query, $user))
             ->count();
 
         return response()->json([
@@ -100,9 +106,11 @@ class UserNotificationApiController extends Controller
      */
     public function markAllRead(Request $request): JsonResponse
     {
+        $user = $request->user();
         UserNotification::query()
-            ->where('user_id', $request->user()->id)
+            ->where('user_id', $user->id)
             ->where('is_read', false)
+            ->tap(fn (Builder $query) => $this->applyClientVisibility($query, $user))
             ->update([
                 'is_read' => true,
                 'read_at' => now(),
@@ -114,6 +122,31 @@ class UserNotificationApiController extends Controller
     }
 
     /**
+     * Mark all notifications for a specific ticket as read.
+     */
+    public function markTicketRead(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $data = $request->validate([
+            'ticket_id' => ['required', 'integer', 'min:1'],
+        ]);
+
+        UserNotification::query()
+            ->where('user_id', $user->id)
+            ->where('ticket_id', $data['ticket_id'])
+            ->where('is_read', false)
+            ->tap(fn (Builder $query) => $this->applyClientVisibility($query, $user))
+            ->update([
+                'is_read' => true,
+                'read_at' => now(),
+            ]);
+
+        return response()->json([
+            'message' => 'Ticket notifications marked as read.',
+        ]);
+    }
+
+    /**
      * Ensure notification belongs to current user.
      */
     private function ensureOwnership(Request $request, UserNotification $notification): void
@@ -121,6 +154,21 @@ class UserNotificationApiController extends Controller
         if ($notification->user_id !== $request->user()->id) {
             abort(404);
         }
+    }
+
+    /**
+     * Restrict client notifications to their own tickets.
+     */
+    private function applyClientVisibility(Builder $query, $user): void
+    {
+        if (! $user->isClient()) {
+            return;
+        }
+
+        $query->whereHas('ticket', function (Builder $ticketQuery) use ($user): void {
+            $ticketQuery->where('created_by_user_id', $user->id)
+                ->orWhereHas('contact', fn (Builder $contactQuery) => $contactQuery->where('user_id', $user->id));
+        });
     }
 
     /**

@@ -19,6 +19,7 @@ class Inbox extends Model
     protected $fillable = [
         'name',
         'slug',
+        'image_path',
         'is_active',
     ];
 

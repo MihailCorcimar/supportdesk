@@ -63,6 +63,51 @@ const formatDate = (value) => {
     return new Date(value).toLocaleString('pt-PT');
 };
 
+const statusLabels = {
+    open: 'Aberto',
+    in_progress: 'Em tratamento',
+    pending: 'Aguardando cliente',
+    closed: 'Fechado',
+    cancelled: 'Cancelado',
+};
+const priorityLabels = {
+    low: 'Baixa',
+    medium: 'Média',
+    high: 'Alta',
+    urgent: 'Urgente',
+};
+const statusPillClass = (status) => {
+    switch (status) {
+        case 'open':
+        case 'in_progress':
+            return 'sd-pill--info';
+        case 'pending':
+            return 'sd-pill--warning';
+        case 'closed':
+            return 'sd-pill--neutral';
+        case 'cancelled':
+            return 'sd-pill--danger';
+        default:
+            return 'sd-pill--neutral';
+    }
+};
+const priorityPillClass = (priority) => {
+    switch (priority) {
+        case 'low':
+            return 'sd-pill--success';
+        case 'medium':
+            return 'sd-pill--warning';
+        case 'high':
+            return 'sd-pill--orange';
+        case 'urgent':
+            return 'sd-pill--danger';
+        default:
+            return 'sd-pill--neutral';
+    }
+};
+const statusLabelFor = (status) => statusLabels[status] || status || '-';
+const priorityLabelFor = (priority) => priorityLabels[priority] || priority || '-';
+
 const fetchMeta = async () => {
     try {
         const response = await api.get('/users/meta');
@@ -260,8 +305,16 @@ onMounted(async () => {
                                     </RouterLink>
                                 </td>
                                 <td>{{ ticket.subject }}</td>
-                                <td>{{ ticket.status }}</td>
-                                <td>{{ ticket.priority }}</td>
+                                <td>
+                                    <span class="sd-pill" :class="statusPillClass(ticket.status)">
+                                        {{ statusLabelFor(ticket.status) }}
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="sd-pill" :class="priorityPillClass(ticket.priority)">
+                                        {{ priorityLabelFor(ticket.priority) }}
+                                    </span>
+                                </td>
                                 <td>{{ ticket.inbox?.name || '-' }}</td>
                                 <td>{{ ticket.entity?.name || '-' }}</td>
                                 <td>{{ formatDate(ticket.created_at) }}</td>
@@ -333,6 +386,14 @@ th, td {
     border-bottom: 1px solid #e2e8f0;
     text-align: left;
     padding: 0.55rem 0.45rem;
+}
+.table thead th {
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: #64748b;
+    background: #f8fbff;
 }
 
 .ticket-link {
@@ -465,4 +526,3 @@ input {
     .form-grid { grid-template-columns: 1fr; }
 }
 </style>
-

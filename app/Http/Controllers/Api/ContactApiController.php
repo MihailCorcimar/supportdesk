@@ -8,6 +8,7 @@ use App\Models\ContactFunction;
 use App\Models\Entity;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -79,7 +80,7 @@ class ContactApiController extends Controller
             'user_id' => [
                 'nullable',
                 'integer',
-                Rule::exists('users', 'id')->where(fn (Builder $query) => $query->where('role', 'client')),
+                Rule::exists('users', 'id')->where(fn (QueryBuilder $query) => $query->where('role', 'client')),
                 Rule::unique('contacts', 'user_id'),
             ],
             'name' => ['required', 'string', 'max:255'],
@@ -152,7 +153,7 @@ class ContactApiController extends Controller
                 'sometimes',
                 'nullable',
                 'integer',
-                Rule::exists('users', 'id')->where(fn (Builder $query) => $query->where('role', 'client')),
+                Rule::exists('users', 'id')->where(fn (QueryBuilder $query) => $query->where('role', 'client')),
                 Rule::unique('contacts', 'user_id')->ignore($contact->id),
             ],
             'name' => ['sometimes', 'required', 'string', 'max:255'],

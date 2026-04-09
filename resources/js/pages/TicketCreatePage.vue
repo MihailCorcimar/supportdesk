@@ -56,6 +56,19 @@ const priorityDotClass = {
     urgent: 'is-urgent',
 };
 
+const typeLabels = {
+    question: 'Questão',
+    incident: 'Incidente',
+    request: 'Pedido',
+    task: 'Tarefa',
+    other: 'Outro',
+};
+const availableTypes = computed(() => {
+    const types = options.value.types || [];
+    if (isOperator.value) return types;
+    return types.filter((type) => type !== 'task');
+});
+
 const statusLabels = {
     open: 'Aberto',
     in_progress: 'Em tratamento',
@@ -65,14 +78,12 @@ const statusLabels = {
 const isOperator = computed(() => auth.state.user?.role === 'operator');
 const isClient = computed(() => auth.state.user?.role === 'client');
 const isAdminOperator = computed(() => isOperator.value && Boolean(auth.state.user?.is_admin));
-const mustUseTriageInbox = computed(() => isClient.value);
+const mustUseTriageInbox = computed(() => false);
 const canSetOperationalDataOnCreate = computed(() => isOperator.value && isAdminOperator.value);
 const triageInboxId = computed(() => {
     const id = options.value?.triage_inbox?.id;
     return id ? String(id) : '';
 });
-const ticketOwnerName = computed(() => auth.state.user?.name || '-');
-
 const availableContacts = computed(() => {
     if (!form.entity_id) return options.value.contacts;
     return options.value.contacts.filter(
@@ -167,20 +178,22 @@ const loadMeta = async () => {
 
         if (options.value.entities.length === 1) {
             form.entity_id = String(options.value.entities[0].id);
+        } else if (isClient.value && options.value.entities.length > 0) {
+            form.entity_id = String(options.value.entities[0].id);
         }
 
         if (mustUseTriageInbox.value) {
-            if (!triageInboxId.value) {
-                error.value = 'Inbox Geral nao esta configurada. Contacta um operador admin.';
-                return;
+            if (triageInboxId.value) {
+                form.inbox_id = triageInboxId.value;
+            } else if (options.value.inboxes.length > 0) {
+                form.inbox_id = String(options.value.inboxes[0].id);
             }
-
-            form.inbox_id = triageInboxId.value;
         } else if (options.value.inboxes.length === 1) {
             form.inbox_id = String(options.value.inboxes[0].id);
         }
+
     } catch (exception) {
-        error.value = 'Nao foi possivel carregar os dados de apoio.';
+        error.value = '';
     } finally {
         loading.value = false;
     }
@@ -192,7 +205,7 @@ const submit = async () => {
     fieldErrors.value = {};
 
     const selectedInboxId = mustUseTriageInbox.value ? triageInboxId.value : form.inbox_id;
-    if (!selectedInboxId) {
+    if (!selectedInboxId && !mustUseTriageInbox.value) {
         fieldErrors.value = { inbox_id: ['Inbox obrigatoria.'] };
         error.value = 'Seleciona uma inbox para continuar.';
         submitting.value = false;
@@ -200,8 +213,12 @@ const submit = async () => {
     }
 
     const payload = new FormData();
-    payload.append('inbox_id', selectedInboxId);
-    payload.append('entity_id', String(Number(form.entity_id)));
+    if (selectedInboxId) {
+        payload.append('inbox_id', selectedInboxId);
+    }
+    if (form.entity_id) {
+        payload.append('entity_id', String(Number(form.entity_id)));
+    }
     payload.append('subject', form.subject);
     payload.append('description', form.description);
     payload.append('description_format', 'plain');
@@ -365,6 +382,7 @@ watch(
         ) {
             form.assigned_operator_id = '';
         }
+
     },
 );
 
@@ -397,7 +415,7 @@ onMounted(loadMeta);
                     <small class="field-error">{{ fieldErrors.inbox_id?.[0] }}</small>
                 </label>
 
-                <label>
+                <label v-if="isOperator">
                     Entidade
                     <select v-model="form.entity_id" required>
                         <option value="">Selecionar</option>
@@ -408,7 +426,7 @@ onMounted(loadMeta);
                     <small class="field-error">{{ fieldErrors.entity_id?.[0] }}</small>
                 </label>
 
-                <label>
+                <label v-if="isOperator">
                     Contacto (opcional)
                     <select v-model="form.contact_id">
                         <option value="">Selecionar</option>
@@ -419,27 +437,27 @@ onMounted(loadMeta);
                     <small class="field-error">{{ fieldErrors.contact_id?.[0] }}</small>
                 </label>
 
-                <label>
-                    Dono do ticket
-                    <input :value="ticketOwnerName" type="text" disabled />
-                    <small class="field-hint">Utilizador autenticado que cria o ticket.</small>
-                </label>
-
                 <label class="col-span-2">
                     Assunto
                     <input v-model="form.subject" required maxlength="255" />
                     <small class="field-error">{{ fieldErrors.subject?.[0] }}</small>
                 </label>
 
+                <label class="col-span-3">
+                    Descricao
+                    <textarea v-model="form.description" required></textarea>
+                    <small class="field-error">{{ fieldErrors.description?.[0] }}</small>
+                </label>
+
                 <label>
                     Tipo
                     <select v-model="form.type" required>
-                        <option v-for="type in options.types" :key="type" :value="type">{{ type }}</option>
+                        <option v-for="type in availableTypes" :key="type" :value="type">{{ typeLabels[type] ?? type }}</option>
                     </select>
                     <small class="field-error">{{ fieldErrors.type?.[0] }}</small>
                 </label>
 
-                <label>
+                <label v-if="isOperator">
                     Prioridade
                     <div class="priority-picker">
                         <button
@@ -532,7 +550,7 @@ onMounted(loadMeta);
                     <small class="field-error">{{ fieldErrors.assigned_operator_id?.[0] }}</small>
                 </label>
 
-                <label :class="canSetOperationalDataOnCreate ? '' : 'col-span-2'">
+                <label v-if="isOperator" :class="canSetOperationalDataOnCreate ? '' : 'col-span-2'">
                     Conhecimento (utilizadores)
                     <div class="followers-picker-modern">
                         <div v-if="selectedFollowers.length" class="followers-tags-modern">
@@ -588,12 +606,6 @@ onMounted(loadMeta);
                         Seleciona primeiro a inbox para listar utilizadores em conhecimento.
                     </small>
                     <small class="field-error">{{ fieldErrors.follower_user_ids?.[0] || fieldErrors['follower_user_ids.0']?.[0] }}</small>
-                </label>
-
-                <label class="col-span-3">
-                    Descricao
-                    <textarea v-model="form.description" required></textarea>
-                    <small class="field-error">{{ fieldErrors.description?.[0] }}</small>
                 </label>
 
                 <label class="col-span-3">

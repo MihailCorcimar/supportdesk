@@ -22,6 +22,7 @@ class DashboardApiController extends Controller
         $this->applyVisibilityScope($query, $user);
 
         $tickets = $query->get();
+        $now = now();
 
         $statusCounts = $tickets->groupBy('status')->map->count();
 
@@ -68,6 +69,55 @@ class DashboardApiController extends Controller
             ->values()
             ->all();
 
+        $criticalBacklogHours = max(1, (int) config('supportdesk.dashboard.critical_backlog_hours', 24));
+        $criticalBacklogCutoff = $now->copy()->subHours($criticalBacklogHours);
+        $openTicketCount = (int) (
+            ($statusCounts['open'] ?? 0)
+            + ($statusCounts['in_progress'] ?? 0)
+            + ($statusCounts['pending'] ?? 0)
+        );
+        $criticalBacklogCount = $tickets
+            ->filter(fn (Ticket $ticket) => in_array($ticket->status, ['open', 'in_progress', 'pending'], true))
+            ->filter(fn (Ticket $ticket) => $ticket->created_at !== null && $ticket->created_at->lte($criticalBacklogCutoff))
+            ->count();
+
+        $dailyFlowDays = min(60, max(7, (int) config('supportdesk.dashboard.daily_flow_days', 14)));
+        $dailyFlowStart = $now->copy()->startOfDay()->subDays($dailyFlowDays - 1);
+        $dailyFlowEnd = $now->copy()->endOfDay();
+
+        $createdPerDayQuery = Ticket::query();
+        $this->applyVisibilityScope($createdPerDayQuery, $user);
+
+        $createdPerDay = $createdPerDayQuery
+            ->whereBetween('created_at', [$dailyFlowStart, $dailyFlowEnd])
+            ->selectRaw('DATE(created_at) as metric_date, COUNT(*) as total')
+            ->groupBy('metric_date')
+            ->pluck('total', 'metric_date');
+
+        $closedPerDayQuery = Ticket::query();
+        $this->applyVisibilityScope($closedPerDayQuery, $user);
+
+        $closedPerDay = $closedPerDayQuery
+            ->whereNotNull('closed_at')
+            ->whereBetween('closed_at', [$dailyFlowStart, $dailyFlowEnd])
+            ->selectRaw('DATE(closed_at) as metric_date, COUNT(*) as total')
+            ->groupBy('metric_date')
+            ->pluck('total', 'metric_date');
+
+        $dailyFlowSeries = collect(range(0, $dailyFlowDays - 1))
+            ->map(function (int $offset) use ($dailyFlowStart, $createdPerDay, $closedPerDay) {
+                $date = $dailyFlowStart->copy()->addDays($offset);
+                $key = $date->toDateString();
+
+                return [
+                    'date' => $key,
+                    'label' => $date->format('d/m'),
+                    'created' => (int) ($createdPerDay[$key] ?? 0),
+                    'closed' => (int) ($closedPerDay[$key] ?? 0),
+                ];
+            })
+            ->all();
+
         return response()->json([
             'data' => [
                 'totals' => [
@@ -91,6 +141,20 @@ class DashboardApiController extends Controller
                     'resolution_compliance_percent' => $resolutionDurations->isEmpty()
                         ? null
                         : round(($resolutionWithinSla / $resolutionDurations->count()) * 100, 2),
+                ],
+                'critical_backlog' => [
+                    'threshold_hours' => $criticalBacklogHours,
+                    'open_tickets' => $openTicketCount,
+                    'critical_tickets' => $criticalBacklogCount,
+                    'critical_percent' => $openTicketCount > 0
+                        ? round(($criticalBacklogCount / $openTicketCount) * 100, 2)
+                        : 0.0,
+                ],
+                'daily_flow' => [
+                    'days' => $dailyFlowDays,
+                    'start_date' => $dailyFlowStart->toDateString(),
+                    'end_date' => $dailyFlowEnd->toDateString(),
+                    'series' => $dailyFlowSeries,
                 ],
                 'by_inbox' => $byInbox,
             ],

@@ -14,6 +14,7 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 
 class TicketNotificationService
 {
@@ -26,6 +27,8 @@ class TicketNotificationService
      * @var array<string, mixed>|null
      */
     private ?array $emailStyleCache = null;
+    private ?bool $hasInboxTemplatesTable = null;
+    private ?bool $hasGlobalTemplatesTable = null;
 
     /**
      * Send notification after a ticket is created.
@@ -232,7 +235,7 @@ class TicketNotificationService
                 ->where('is_active', true)
                 ->get();
 
-        return collect([
+        $recipients = collect([
             $ticket->creatorUser,
             $ticket->contact?->user,
             $ticket->assignedOperator,
@@ -242,6 +245,23 @@ class TicketNotificationService
             ->merge($usersByCc)
             ->filter(fn (mixed $user) => $user instanceof User && $user->is_active)
             ->unique(fn (User $user) => $user->id)
+            ->values();
+
+        if ($recipients->isEmpty()) {
+            return $recipients;
+        }
+
+        $creatorId = (int) ($ticket->creatorUser?->id ?? 0);
+        $contactUserId = (int) ($ticket->contact?->user?->id ?? 0);
+
+        return $recipients
+            ->reject(function (User $user) use ($creatorId, $contactUserId) {
+                if (! $user->isClient()) {
+                    return false;
+                }
+
+                return $user->id !== $creatorId && $user->id !== $contactUserId;
+            })
             ->values();
     }
 
@@ -346,14 +366,14 @@ class TicketNotificationService
         }
 
         $template = null;
-        if ($inboxId) {
+        if ($inboxId && $this->canUseInboxTemplatesTable()) {
             $template = InboxNotificationTemplate::query()
                 ->where('inbox_id', $inboxId)
                 ->where('event_key', $eventKey)
                 ->first();
         }
 
-        if (! $template) {
+        if (! $template && $this->canUseGlobalTemplatesTable()) {
             $template = NotificationTemplate::query()
                 ->where('event_key', $eventKey)
                 ->first();
@@ -373,6 +393,24 @@ class TicketNotificationService
         $this->templateCache[$cacheKey] = $resolved;
 
         return $resolved;
+    }
+
+    private function canUseInboxTemplatesTable(): bool
+    {
+        if ($this->hasInboxTemplatesTable === null) {
+            $this->hasInboxTemplatesTable = Schema::hasTable('inbox_notification_templates');
+        }
+
+        return $this->hasInboxTemplatesTable;
+    }
+
+    private function canUseGlobalTemplatesTable(): bool
+    {
+        if ($this->hasGlobalTemplatesTable === null) {
+            $this->hasGlobalTemplatesTable = Schema::hasTable('notification_templates');
+        }
+
+        return $this->hasGlobalTemplatesTable;
     }
 
     /**
@@ -429,12 +467,40 @@ class TicketNotificationService
     private function statusLabel(string $status): string
     {
         return match (strtolower(trim($status))) {
-            'open' => 'aberto',
-            'in_progress' => 'em tratamento',
-            'pending' => 'aguardando cliente',
-            'closed' => 'fechado',
-            'cancelled' => 'cancelado',
-            default => strtolower(trim($status)),
+            'open'        => 'Aberto',
+            'in_progress' => 'Em tratamento',
+            'pending'     => 'Aguarda cliente',
+            'closed'      => 'Fechado',
+            'cancelled'   => 'Cancelado',
+            default       => ucfirst(strtolower(trim($status))),
+        };
+    }
+
+    /**
+     * Convert priority key to PT-PT label.
+     */
+    private function priorityLabel(string $priority): string
+    {
+        return match (strtolower(trim($priority))) {
+            'low'    => 'Baixa',
+            'medium' => 'MÃ©dia',
+            'high'   => 'Alta',
+            'urgent' => 'Urgente',
+            default  => ucfirst(strtolower(trim($priority))),
+        };
+    }
+
+    /**
+     * Convert type key to PT-PT label.
+     */
+    private function typeLabel(string $type): string
+    {
+        return match (strtolower(trim($type))) {
+            'incident' => 'Incidente',
+            'request'  => 'Pedido',
+            'question' => 'QuestÃ£o',
+            'task'     => 'Tarefa',
+            default    => ucfirst(strtolower(trim($type))),
         };
     }
 
@@ -453,7 +519,7 @@ class TicketNotificationService
             ?? $ticket->contact?->name
             ?? 'Desconhecido';
 
-        $assignedOperator = $ticket->assignedOperator?->name ?? 'Sem atribuiÃ§Ã£o';
+        $assignedOperator = $ticket->assignedOperator?->name ?? 'Sem atribuicao';
         $contactName = $ticket->contact?->name ?? '-';
         $entityName = $ticket->entity?->name ?? '-';
         $inboxName = $ticket->inbox?->name ?? '-';
@@ -470,20 +536,20 @@ class TicketNotificationService
         }
 
         return [
-            '{ticket_number}' => (string) $ticket->ticket_number,
-            '{subject}' => (string) $ticket->subject,
-            '{status}' => (string) $ticket->status,
-            '{priority}' => (string) $ticket->priority,
-            '{type}' => (string) $ticket->type,
-            '{inbox}' => $inboxName,
-            '{entity}' => $entityName,
-            '{contact}' => $contactName,
-            '{creator_name}' => $creatorName,
+            '{ticket_number}'     => (string) $ticket->ticket_number,
+            '{subject}'           => (string) $ticket->subject,
+            '{status}'            => $this->statusLabel((string) $ticket->status),
+            '{priority}'          => $this->priorityLabel((string) $ticket->priority),
+            '{type}'              => $this->typeLabel((string) $ticket->type),
+            '{inbox}'             => $inboxName,
+            '{entity}'            => $entityName,
+            '{contact}'           => $contactName,
+            '{creator_name}'      => $creatorName,
             '{assigned_operator}' => $assignedOperator,
-            '{author_name}' => $authorName,
-            '{message_preview}' => $messagePreview,
-            '{cc_emails}' => $ccEmails !== '' ? $ccEmails : '-',
-            '{ticket_url}' => url('/tickets/'.$ticket->id),
+            '{author_name}'       => $authorName,
+            '{message_preview}'   => $messagePreview,
+            '{cc_emails}'         => $ccEmails !== '' ? $ccEmails : '-',
+            '{ticket_url}'        => url('/tickets/'.$ticket->id),
         ];
     }
 
@@ -517,3 +583,4 @@ class TicketNotificationService
         return $lines;
     }
 }
+
